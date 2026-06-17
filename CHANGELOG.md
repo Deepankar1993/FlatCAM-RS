@@ -2,6 +2,24 @@
 
 All notable changes to the Rust port are recorded here.
 
+## [0.3.0] — Phase 2/3: orchestrated feature batch
+
+Authored by 6 agents in parallel (~73 s) against the frozen API in
+`docs/AGENT_GUIDE.md`, integrated with a single `cargo test` gate (green first
+try). Demonstrates the modular parallel-development model.
+
+### Added
+- **`fc-cam::milling`** — general profile + pocket milling (`ToolMilling` core).
+- **`fc-cam::sub`** — geometry boolean subtract (`ToolSub` core).
+- **`fc-cam::etch`** — etch compensation widening (`ToolEtchCompensation` core).
+- **`fc-cam::invert`** — invert Gerber copper within a bbox (`ToolInvertGerber`).
+- **`fc-cam::drilloptim`** — greedy nearest-neighbor drill ordering to cut rapid
+  travel (`ToolDrilling` enhancement).
+- **`fc-cam::fiducials`** — fiducial/marker geometry (`ToolFiducials`/`ToolMarkers`).
+
+### Verified
+- `cargo test --workspace`: 64 passed, 0 warnings.
+
 ## [0.2.0] — Phase 2 (in progress): paint, NCC, cutout, panelize, transforms, dialects
 
 ### Added

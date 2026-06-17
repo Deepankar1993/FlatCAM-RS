@@ -31,8 +31,8 @@ Round out the compute that most boards need (Group A from the plugin audit).
 | ✅ Paint / flood-fill | `ToolPaint` | scanline line-fill + contour, even-odd hole handling (`fc-cam::paint`, CLI `paint`) |
 | ✅ NCC (non-copper clear) | `ToolNCC` | board-rect minus copper, paint-filled (`fc-cam::ncc`, CLI `ncc`) |
 | ✅ Cutout / board outline | `ToolCutOut` | outline mill + holding tabs (`fc-cam::cutout`, CLI `cutout`) |
-| ⬜ Milling (general) | `ToolMilling` | profile/pocket milling of `Geometry` objects |
-| ⬜ Geometry boolean Sub | `ToolSub` | difference between Gerber/geometry objects |
+| ✅ Milling (general) | `ToolMilling` | profile + pocket milling (`fc-cam::milling`) |
+| ✅ Geometry boolean Sub | `ToolSub` | difference of geometries (`fc-cam::sub`) |
 | ⬜ Follow (trace centre-line) | `ToolFollow` | already partly available via `follow_geometry` |
 | ✅ Laser paths (preproc) | `ToolLaser` | mill paths + `grbl_laser` dialect (engrave UI pending) |
 | ⬜ Multi-depth, tabs, rest-machining | isolation/cutout | toolpath refinements |
@@ -45,9 +45,10 @@ Group B/C tools — moderate compute, no new subsystems.
 - ✅ Transform primitives (translate/rotate/scale/skew/mirror) — `fc-geo::transform`
 - ✅ Panelize (array of boards) — `fc-cam::panelize`
 - ✅ Double-sided mirror/flip — `fc-cam::panelize::mirror_for_bottom`
-- ⬜ Etch compensation — `ToolEtchCompensation` (offset, already have `offset`)
-- ⬜ Invert Gerber — `ToolInvertGerber`
-- ⬜ Fiducials / markers — `ToolFiducials`, `ToolMarkers`
+- ✅ Etch compensation — `fc-cam::etch`
+- ✅ Invert Gerber — `fc-cam::invert`
+- ✅ Fiducials / markers — `fc-cam::fiducials`
+- ✅ Drill path optimization (nearest-neighbor) — `fc-cam::drilloptim`
 - ⬜ Film / negative export — `ToolFilm`
 - ⬜ Rules check (DRC) — `ToolRulesCheck`
 - ⬜ Bed levelling height map — `ToolLevelling`

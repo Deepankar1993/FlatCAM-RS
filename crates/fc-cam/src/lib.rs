@@ -18,6 +18,18 @@ pub mod ncc;
 pub use ncc::{ncc_job, ncc_paths, ncc_region, NccParams};
 pub mod panelize;
 pub use panelize::{mirror_for_bottom, panelize, panelize_auto};
+pub mod milling;
+pub use milling::{milling_job, milling_pocket, milling_profile, MillingParams};
+pub mod sub;
+pub use sub::{subtract, subtract_all};
+pub mod etch;
+pub use etch::{compensate, EtchParams};
+pub mod invert;
+pub use invert::invert;
+pub mod drilloptim;
+pub use drilloptim::{order_nearest, path_length};
+pub mod fiducials;
+pub use fiducials::{corner_fiducials, fiducial_dots};
 
 /// Parameters for isolation routing.
 #[derive(Clone, Debug)]
