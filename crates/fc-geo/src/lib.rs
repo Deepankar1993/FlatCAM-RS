@@ -181,6 +181,49 @@ pub fn area(mp: &MultiPolygon<f64>) -> f64 {
     mp.unsigned_area()
 }
 
+/// Bounding box of a multipolygon as `(min_x, min_y, max_x, max_y)`.
+pub fn bounds(mp: &MultiPolygon<f64>) -> Option<(f64, f64, f64, f64)> {
+    use geo::BoundingRect;
+    mp.bounding_rect()
+        .map(|r| (r.min().x, r.min().y, r.max().x, r.max().y))
+}
+
+/// Affine transforms (Shapely `affinity.*` / FlatCAM `ToolTransform`).
+/// Angles are in degrees.
+pub mod transform {
+    use super::MultiPolygon;
+    use geo::{AffineOps, AffineTransform, Coord};
+
+    pub fn translate(mp: &MultiPolygon<f64>, dx: f64, dy: f64) -> MultiPolygon<f64> {
+        mp.affine_transform(&AffineTransform::translate(dx, dy))
+    }
+
+    pub fn scale(mp: &MultiPolygon<f64>, sx: f64, sy: f64, origin: (f64, f64)) -> MultiPolygon<f64> {
+        let t = AffineTransform::scale(sx, sy, Coord { x: origin.0, y: origin.1 });
+        mp.affine_transform(&t)
+    }
+
+    pub fn rotate(mp: &MultiPolygon<f64>, degrees: f64, origin: (f64, f64)) -> MultiPolygon<f64> {
+        let t = AffineTransform::rotate(degrees, Coord { x: origin.0, y: origin.1 });
+        mp.affine_transform(&t)
+    }
+
+    pub fn skew(mp: &MultiPolygon<f64>, xs: f64, ys: f64, origin: (f64, f64)) -> MultiPolygon<f64> {
+        let t = AffineTransform::skew(xs, ys, Coord { x: origin.0, y: origin.1 });
+        mp.affine_transform(&t)
+    }
+
+    /// Mirror across the X axis (`flip_y`) about `y = axis`.
+    pub fn mirror_x(mp: &MultiPolygon<f64>, axis: f64) -> MultiPolygon<f64> {
+        scale(mp, 1.0, -1.0, (0.0, axis))
+    }
+
+    /// Mirror across the Y axis (`flip_x`) about `x = axis`.
+    pub fn mirror_y(mp: &MultiPolygon<f64>, axis: f64) -> MultiPolygon<f64> {
+        scale(mp, -1.0, 1.0, (axis, 0.0))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,6 +272,25 @@ mod tests {
         eprintln!("circle area {} grown area {} polys {}", area(&mp), area(&grown), grown.0.len());
         assert!(grown.0.len() >= 1, "offset of circle returned empty");
         assert!(area(&grown) > area(&mp));
+    }
+
+    #[test]
+    fn transforms_preserve_area_and_move() {
+        let mp = MultiPolygon::new(vec![centered_rect(0.0, 0.0, 2.0, 2.0)]);
+        let a0 = area(&mp);
+        let moved = transform::translate(&mp, 5.0, 3.0);
+        assert!((area(&moved) - a0).abs() < 1e-9);
+        let (x0, y0, _, _) = bounds(&moved).unwrap();
+        assert!((x0 - 4.0).abs() < 1e-9 && (y0 - 2.0).abs() < 1e-9);
+
+        let rot = transform::rotate(&mp, 90.0, (0.0, 0.0));
+        assert!((area(&rot) - a0).abs() < 1e-6);
+
+        let scaled = transform::scale(&mp, 2.0, 3.0, (0.0, 0.0));
+        assert!((area(&scaled) - a0 * 6.0).abs() < 1e-6);
+
+        let mir = transform::mirror_y(&mp, 0.0);
+        assert!((area(&mir) - a0).abs() < 1e-9);
     }
 
     #[test]

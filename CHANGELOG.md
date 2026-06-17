@@ -2,6 +2,22 @@
 
 All notable changes to the Rust port are recorded here.
 
+## [0.2.0] — Phase 2 (in progress): paint, transforms
+
+### Added
+- **`fc-geo::transform`** — affine primitives (translate, rotate, scale, skew,
+  mirror X/Y) and `bounds()`. Foundation for `ToolTransform`, panelize,
+  double-sided. (1 test)
+- **`fc-cam::paint`** — area paint / pocket infill (`ToolPaint` core): inset by
+  tool radius + margin, horizontal scanline fill spaced by `tool_dia·(1−overlap)`
+  with even-odd hole handling and zig-zag direction alternation, plus optional
+  boundary contour pass. (3 tests)
+- **`fc-cli paint`** — `flatcam-rs paint <gerber>` renders an infill job.
+
+### Verified
+- `cargo test --workspace`: 30 passed.
+- `cargo build --release`: ok; paint of the sample board => 13 passes.
+
 ## [0.1.0] — Phase 1: CAM engine core
 
 Initial working, tested, GUI-free CAM pipeline. Purely additive to the Python

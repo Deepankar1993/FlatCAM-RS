@@ -28,7 +28,7 @@ Round out the compute that most boards need (Group A from the plugin audit).
 
 | Work | Python source | Notes |
 |------|---------------|-------|
-| ⬜ Paint / flood-fill | `ToolPaint` | inner-fill toolpaths; needs polygon infill (lines/contours) |
+| ✅ Paint / flood-fill | `ToolPaint` | scanline line-fill + contour, even-odd hole handling (`fc-cam::paint`, CLI `paint`) |
 | ⬜ NCC (non-copper clear) | `ToolNCC` | clear all non-copper; large boolean + infill |
 | ⬜ Cutout / board outline | `ToolCutOut` | outline mill + holding tabs/gaps |
 | ⬜ Milling (general) | `ToolMilling` | profile/pocket milling of `Geometry` objects |
@@ -42,7 +42,7 @@ Round out the compute that most boards need (Group A from the plugin audit).
 
 Group B/C tools — moderate compute, no new subsystems.
 
-- ⬜ Transform (rotate/scale/skew/mirror) — `geo::AffineOps` (foundation exists)
+- ✅ Transform primitives (translate/rotate/scale/skew/mirror) — `fc-geo::transform`
 - ⬜ Panelize (array of boards) — `ToolPanelize`
 - ⬜ Double-sided mirror/flip — `ToolDblSided`
 - ⬜ Etch compensation — `ToolEtchCompensation` (offset, already have `offset`)

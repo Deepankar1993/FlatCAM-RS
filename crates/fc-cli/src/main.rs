@@ -52,6 +52,7 @@ fn run() -> Result<()> {
         "info" => cmd_info(&positional),
         "iso" => cmd_iso(&positional, &opts),
         "drill" => cmd_drill(&positional, &opts),
+        "paint" => cmd_paint(&positional, &opts),
         "-h" | "--help" | "help" => {
             print_usage();
             Ok(())
@@ -67,6 +68,7 @@ fn print_usage() {
          COMMANDS:\n\
          \x20 info  <file>         parse and report statistics\n\
          \x20 iso   <gerber>       isolation-route a Gerber to G-code\n\
+         \x20 paint <gerber>       area-fill (pocket) the copper regions\n\
          \x20 drill <excellon>     drill an Excellon file to G-code\n\
          \n\
          See source header for the full option list."
@@ -206,6 +208,38 @@ fn cmd_drill(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
         gcode.push_str(&job.to_gcode(pp.as_ref()));
     }
     eprintln!("drill: {} tools, preproc {}", e.tools.len(), pp.name());
+    write_output(opts, &gcode)
+}
+
+fn cmd_paint(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
+    let path = pos.first().context("paint: expected a gerber path")?;
+    let text = read(path)?;
+    let g = fc_gerber::parse(&text)?;
+    let units = match g.units {
+        fc_gerber::Units::Mm => Units::Mm,
+        fc_gerber::Units::Inch => Units::Inch,
+    };
+    let params = fc_cam::PaintParams {
+        tool_diameter: getf(opts, "tool-dia", 0.5),
+        overlap: getf(opts, "overlap", 0.2),
+        margin: getf(opts, "margin", 0.0),
+        add_contour: opts.get("no-contour").is_none(),
+        job: job_params_from_opts(opts, units),
+    };
+    let job = fc_cam::paint_job(&g.solid_geometry, &params, units);
+    let pp = preproc_from_opts(opts);
+    let gcode = job.to_gcode(pp.as_ref());
+    let passes = match &job.kind {
+        fc_gcode::JobKind::Mill { paths } => paths.len(),
+        _ => 0,
+    };
+    eprintln!(
+        "paint: tool {:.3}, overlap {:.0}%, {} pass(es), preproc {}",
+        params.tool_diameter,
+        params.overlap * 100.0,
+        passes,
+        pp.name()
+    );
     write_output(opts, &gcode)
 }
 

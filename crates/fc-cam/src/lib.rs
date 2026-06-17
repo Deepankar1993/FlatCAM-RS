@@ -10,6 +10,9 @@ use fc_geo::{offset, MultiPolygon};
 use fc_gerber::Gerber;
 use fc_excellon::Excellon;
 
+pub mod paint;
+pub use paint::{paint_job, paint_region, PaintParams};
+
 /// Parameters for isolation routing.
 #[derive(Clone, Debug)]
 pub struct IsolationParams {
