@@ -30,6 +30,16 @@ pub mod drilloptim;
 pub use drilloptim::{order_nearest, path_length};
 pub mod fiducials;
 pub use fiducials::{corner_fiducials, fiducial_dots};
+pub mod follow;
+pub use follow::{follow_job, follow_paths};
+pub mod solderpaste;
+pub use solderpaste::{paste_job, paste_paths, PasteParams};
+pub mod thieving;
+pub use thieving::{thieving, ThievingParams};
+pub mod rulescheck;
+pub use rulescheck::{check_clearance, min_clearance_ok, Violation};
+pub mod levelling;
+pub use levelling::{probe_grid, probe_job};
 
 /// Parameters for isolation routing.
 #[derive(Clone, Debug)]

@@ -33,7 +33,8 @@ Round out the compute that most boards need (Group A from the plugin audit).
 | ✅ Cutout / board outline | `ToolCutOut` | outline mill + holding tabs (`fc-cam::cutout`, CLI `cutout`) |
 | ✅ Milling (general) | `ToolMilling` | profile + pocket milling (`fc-cam::milling`) |
 | ✅ Geometry boolean Sub | `ToolSub` | difference of geometries (`fc-cam::sub`) |
-| ⬜ Follow (trace centre-line) | `ToolFollow` | already partly available via `follow_geometry` |
+| ✅ Follow (trace centre-line) | `ToolFollow` | `fc-cam::follow` (engrave along `follow_geometry`) |
+| ✅ Copper thieving | `ToolCopperThieving` | dot-grid fill kept clear of copper (`fc-cam::thieving`) |
 | ✅ Laser paths (preproc) | `ToolLaser` | mill paths + `grbl_laser` dialect (engrave UI pending) |
 | ⬜ Multi-depth, tabs, rest-machining | isolation/cutout | toolpath refinements |
 | ⬜ Infill primitives in `fc-geo` | — | line-fill and contour-fill scanlines |
@@ -50,8 +51,9 @@ Group B/C tools — moderate compute, no new subsystems.
 - ✅ Fiducials / markers — `fc-cam::fiducials`
 - ✅ Drill path optimization (nearest-neighbor) — `fc-cam::drilloptim`
 - ⬜ Film / negative export — `ToolFilm`
-- ⬜ Rules check (DRC) — `ToolRulesCheck`
-- ⬜ Bed levelling height map — `ToolLevelling`
+- ✅ Rules check (DRC, min-clearance) — `fc-cam::rulescheck`
+- ✅ Bed levelling probe grid — `fc-cam::levelling`
+- ✅ Solder-paste dispense paths — `fc-cam::solderpaste`
 - ⬜ Calculators, distance, optimal, QR code — small utilities
 
 ## Phase 4 — Additional parsers ⬜

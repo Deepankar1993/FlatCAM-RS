@@ -2,6 +2,21 @@
 
 All notable changes to the Rust port are recorded here.
 
+## [0.4.0] — Phase 2/3: second orchestrated batch
+
+5 more modules authored by agents in parallel (~70 s), integrated green first try.
+
+### Added
+- **`fc-cam::follow`** — trace centre-line engraving job (`ToolFollow`).
+- **`fc-cam::solderpaste`** — paste dispense paths over pads (`ToolSolderPaste`).
+- **`fc-cam::thieving`** — copper thieving dot-grid fill kept clear of copper
+  (`ToolCopperThieving`).
+- **`fc-cam::rulescheck`** — minimum-clearance DRC (`ToolRulesCheck`).
+- **`fc-cam::levelling`** — bed-levelling probe grid (`ToolLevelling`).
+
+### Verified
+- `cargo test --workspace`: 84 passed, 0 warnings.
+
 ## [0.3.0] — Phase 2/3: orchestrated feature batch
 
 Authored by 6 agents in parallel (~73 s) against the frozen API in
