@@ -41,6 +41,12 @@ flatcam-rs/
 Each crate maps to a FlatCAM Python layer — see
 [`docs/DESIGN.md`](docs/DESIGN.md) for the full mapping.
 
+The crate boundaries are deliberately modular so the port can be built by **many
+agents in parallel**: each feature is one self-contained module file with its own
+tests, authored against a frozen API. See
+[`docs/AGENT_GUIDE.md`](docs/AGENT_GUIDE.md) for the contribution contract and
+[`docs/ROADMAP.md`](docs/ROADMAP.md) for the work breakdown.
+
 ## Build & test
 
 ```sh
