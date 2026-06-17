@@ -2,7 +2,7 @@
 
 All notable changes to the Rust port are recorded here.
 
-## [0.2.0] — Phase 2 (in progress): paint, transforms
+## [0.2.0] — Phase 2 (in progress): paint, NCC, cutout, panelize, transforms, dialects
 
 ### Added
 - **`fc-geo::transform`** — affine primitives (translate, rotate, scale, skew,
@@ -12,11 +12,21 @@ All notable changes to the Rust port are recorded here.
   tool radius + margin, horizontal scanline fill spaced by `tool_dia·(1−overlap)`
   with even-odd hole handling and zig-zag direction alternation, plus optional
   boundary contour pass. (3 tests)
-- **`fc-cli paint`** — `flatcam-rs paint <gerber>` renders an infill job.
+- **`fc-cam::ncc`** — non-copper clear (`ToolNCC` core): board-rect minus copper,
+  infilled via the paint engine. (tests)
+- **`fc-cam::cutout`** — board outline milling (`ToolCutOut` core) with evenly
+  spaced holding tabs (densified ring, mid-edge tab placement). (tests)
+- **`fc-cam::panelize`** — panelization (nx×ny tiling, auto-pitch) and
+  double-sided mirror (`ToolPanelize`/`ToolDblSided` cores). (tests)
+- **`fc-gcode::dialects`** — additional preprocessors: GenericDefault, GrblNoM6,
+  GrblLaser (laser power on S, no Z), RolandMDX, plus `by_name()` lookup. (tests)
+- **`fc-cli`** — new commands `paint`, `ncc`, `cutout`; `--preproc` now selects
+  any registered dialect (grbl/marlin/default/grbl_no_m6/grbl_laser/roland).
 
 ### Verified
-- `cargo test --workspace`: 30 passed.
-- `cargo build --release`: ok; paint of the sample board => 13 passes.
+- `cargo test --workspace`: 46 passed.
+- `cargo build --release`: ok. NCC/cutout/laser verified end-to-end on the
+  sample board (scanlines correctly split around copper; cutout leaves 4 tabs).
 
 ## [0.1.0] — Phase 1: CAM engine core
 

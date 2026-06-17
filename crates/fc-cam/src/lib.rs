@@ -12,6 +12,12 @@ use fc_excellon::Excellon;
 
 pub mod paint;
 pub use paint::{paint_job, paint_region, PaintParams};
+pub mod cutout;
+pub use cutout::{cutout_geometry, cutout_job, cutout_rectangular, CutoutParams};
+pub mod ncc;
+pub use ncc::{ncc_job, ncc_paths, ncc_region, NccParams};
+pub mod panelize;
+pub use panelize::{mirror_for_bottom, panelize, panelize_auto};
 
 /// Parameters for isolation routing.
 #[derive(Clone, Debug)]

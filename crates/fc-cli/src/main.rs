@@ -23,7 +23,7 @@
 //!   --preproc <name>   grbl | marlin
 
 use anyhow::{bail, Context, Result};
-use fc_gcode::{Grbl, JobParams, Marlin, Preprocessor, Units};
+use fc_gcode::{Grbl, JobParams, Preprocessor, Units};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -53,6 +53,8 @@ fn run() -> Result<()> {
         "iso" => cmd_iso(&positional, &opts),
         "drill" => cmd_drill(&positional, &opts),
         "paint" => cmd_paint(&positional, &opts),
+        "ncc" => cmd_ncc(&positional, &opts),
+        "cutout" => cmd_cutout(&positional, &opts),
         "-h" | "--help" | "help" => {
             print_usage();
             Ok(())
@@ -67,9 +69,13 @@ fn print_usage() {
          \n\
          COMMANDS:\n\
          \x20 info  <file>         parse and report statistics\n\
-         \x20 iso   <gerber>       isolation-route a Gerber to G-code\n\
-         \x20 paint <gerber>       area-fill (pocket) the copper regions\n\
-         \x20 drill <excellon>     drill an Excellon file to G-code\n\
+         \x20 iso    <gerber>      isolation-route a Gerber to G-code\n\
+         \x20 paint  <gerber>      area-fill (pocket) the copper regions\n\
+         \x20 ncc    <gerber>      non-copper clear (clear all non-copper area)\n\
+         \x20 cutout <gerber>      mill the board outline with holding tabs\n\
+         \x20 drill  <excellon>    drill an Excellon file to G-code\n\
+         \n\
+         Preprocessors (--preproc): grbl, marlin, default, grbl_no_m6, grbl_laser, roland\n\
          \n\
          See source header for the full option list."
     );
@@ -110,10 +116,9 @@ fn job_params_from_opts(opts: &HashMap<String, String>, units: Units) -> JobPara
 }
 
 fn preproc_from_opts(opts: &HashMap<String, String>) -> Box<dyn Preprocessor> {
-    match opts.get("preproc").map(|s| s.as_str()) {
-        Some("marlin") | Some("Marlin") => Box::new(Marlin),
-        _ => Box::new(Grbl),
-    }
+    opts.get("preproc")
+        .and_then(|n| fc_gcode::dialects::by_name(n))
+        .unwrap_or_else(|| Box::new(Grbl))
 }
 
 fn read(path: &str) -> Result<String> {
@@ -241,6 +246,54 @@ fn cmd_paint(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
         pp.name()
     );
     write_output(opts, &gcode)
+}
+
+fn cmd_ncc(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
+    let path = pos.first().context("ncc: expected a gerber path")?;
+    let g = fc_gerber::parse(&read(path)?)?;
+    let units = gerber_units(&g);
+    let params = fc_cam::NccParams {
+        tool_diameter: getf(opts, "tool-dia", 0.5),
+        overlap: getf(opts, "overlap", 0.4),
+        boundary_margin: getf(opts, "margin", 1.0),
+        job: job_params_from_opts(opts, units),
+    };
+    let job = fc_cam::ncc_job(&g.solid_geometry, &params, units);
+    let pp = preproc_from_opts(opts);
+    let gcode = job.to_gcode(pp.as_ref());
+    eprintln!("ncc: clear non-copper, tool {:.3}, preproc {}", params.tool_diameter, pp.name());
+    write_output(opts, &gcode)
+}
+
+fn cmd_cutout(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
+    let path = pos.first().context("cutout: expected a gerber path")?;
+    let g = fc_gerber::parse(&read(path)?)?;
+    let units = gerber_units(&g);
+    let params = fc_cam::CutoutParams {
+        tool_diameter: getf(opts, "tool-dia", 1.0),
+        tabs: getf(opts, "tabs", 4.0) as usize,
+        tab_gap: getf(opts, "tab-gap", 2.0),
+        outside: opts.get("on-line").is_none(),
+        job: job_params_from_opts(opts, units),
+    };
+    // Use the Gerber's bounding box as the board outline.
+    let (minx, miny, maxx, maxy) = g.bounds().context("cutout: empty gerber")?;
+    let paths = fc_cam::cutout_rectangular(minx, miny, maxx, maxy, &params);
+    let mut jp = params.job.clone();
+    jp.units = units;
+    jp.tool_diameter = params.tool_diameter;
+    let job = fc_gcode::CncJob { params: jp, kind: fc_gcode::JobKind::Mill { paths } };
+    let pp = preproc_from_opts(opts);
+    let gcode = job.to_gcode(pp.as_ref());
+    eprintln!("cutout: {} tabs, tool {:.3}, preproc {}", params.tabs, params.tool_diameter, pp.name());
+    write_output(opts, &gcode)
+}
+
+fn gerber_units(g: &fc_gerber::Gerber) -> Units {
+    match g.units {
+        fc_gerber::Units::Mm => Units::Mm,
+        fc_gerber::Units::Inch => Units::Inch,
+    }
 }
 
 enum FileKind {

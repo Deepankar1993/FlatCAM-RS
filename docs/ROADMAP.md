@@ -29,12 +29,12 @@ Round out the compute that most boards need (Group A from the plugin audit).
 | Work | Python source | Notes |
 |------|---------------|-------|
 | ✅ Paint / flood-fill | `ToolPaint` | scanline line-fill + contour, even-odd hole handling (`fc-cam::paint`, CLI `paint`) |
-| ⬜ NCC (non-copper clear) | `ToolNCC` | clear all non-copper; large boolean + infill |
-| ⬜ Cutout / board outline | `ToolCutOut` | outline mill + holding tabs/gaps |
+| ✅ NCC (non-copper clear) | `ToolNCC` | board-rect minus copper, paint-filled (`fc-cam::ncc`, CLI `ncc`) |
+| ✅ Cutout / board outline | `ToolCutOut` | outline mill + holding tabs (`fc-cam::cutout`, CLI `cutout`) |
 | ⬜ Milling (general) | `ToolMilling` | profile/pocket milling of `Geometry` objects |
 | ⬜ Geometry boolean Sub | `ToolSub` | difference between Gerber/geometry objects |
 | ⬜ Follow (trace centre-line) | `ToolFollow` | already partly available via `follow_geometry` |
-| ⬜ Laser engraving paths | `ToolLaser` | reuse mill paths + laser preprocessors |
+| ✅ Laser paths (preproc) | `ToolLaser` | mill paths + `grbl_laser` dialect (engrave UI pending) |
 | ⬜ Multi-depth, tabs, rest-machining | isolation/cutout | toolpath refinements |
 | ⬜ Infill primitives in `fc-geo` | — | line-fill and contour-fill scanlines |
 
@@ -43,8 +43,8 @@ Round out the compute that most boards need (Group A from the plugin audit).
 Group B/C tools — moderate compute, no new subsystems.
 
 - ✅ Transform primitives (translate/rotate/scale/skew/mirror) — `fc-geo::transform`
-- ⬜ Panelize (array of boards) — `ToolPanelize`
-- ⬜ Double-sided mirror/flip — `ToolDblSided`
+- ✅ Panelize (array of boards) — `fc-cam::panelize`
+- ✅ Double-sided mirror/flip — `fc-cam::panelize::mirror_for_bottom`
 - ⬜ Etch compensation — `ToolEtchCompensation` (offset, already have `offset`)
 - ⬜ Invert Gerber — `ToolInvertGerber`
 - ⬜ Fiducials / markers — `ToolFiducials`, `ToolMarkers`
