@@ -2,6 +2,18 @@
 
 All notable changes to the Rust port are recorded here.
 
+## [0.5.0] — Phase 7 start: desktop GUI scaffold
+
+### Added
+- **`fc-gui`** (binary `flatcam-gui`) — native `eframe`/`egui` desktop app:
+  open Gerber/Excellon, render geometry on a pan/zoom 2D canvas, run isolation
+  and paint, overlay tool-paths, adjust tool Ø / passes / overlap. Replaces the
+  PyQt6 + VisPy/matplotlib stack; all compute runs through the Rust crates.
+
+### Verified
+- `cargo build -p fc-gui`: compiles (eframe/egui 0.29).
+- `cargo test --workspace`: 84 passed (GUI binary compiles in the test build).
+
 ## [0.4.0] — Phase 2/3: second orchestrated batch
 
 5 more modules authored by agents in parallel (~70 s), integrated green first try.

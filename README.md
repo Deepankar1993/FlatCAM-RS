@@ -32,8 +32,9 @@ flatcam-rs/
 │   ├── fc-gerber     # RS-274X Gerber parser  -> geo::MultiPolygon
 │   ├── fc-excellon   # Excellon drill parser   -> tools/drills/slots
 │   ├── fc-gcode      # CNC job model + preprocessor framework (GRBL, Marlin)
-│   ├── fc-cam        # CAM ops: isolation routing, drilling
-│   └── fc-cli        # headless front-end: `flatcam-rs`
+│   ├── fc-cam        # CAM ops: isolation, drilling, paint, NCC, cutout, …
+│   ├── fc-cli        # headless front-end: `flatcam-rs`
+│   └── fc-gui        # native desktop app (eframe/egui): `flatcam-gui`
 ├── examples/         # sample Gerber/Excellon fixtures
 └── docs/             # DESIGN.md, ROADMAP.md
 ```
@@ -69,6 +70,18 @@ flatcam-rs iso   examples/two_pads.gbr --tool-dia 0.4 --passes 2 --overlap 0.25 
 # Drilling: all tools, 1.8 mm depth, Marlin dialect
 flatcam-rs drill examples/two_pads.drl --cut-z -1.8 --preproc marlin -o board_drill.gcode
 ```
+
+## Desktop GUI
+
+```sh
+cargo run -p fc-gui                       # launch the native app
+cargo run -p fc-gui -- examples/two_pads.gbr   # open a file on start
+```
+
+The `flatcam-gui` window opens Gerber/Excellon files, renders them on a pan/zoom
+canvas (drag to pan, scroll to zoom), and runs Isolation/Paint with the results
+overlaid as tool-paths. It is an early scaffold — the engine is complete; the
+UI surface is being filled in (see the roadmap).
 
 ## Relationship to the Python project
 

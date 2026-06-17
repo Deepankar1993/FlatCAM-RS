@@ -86,9 +86,14 @@ common remainder behind the existing `Preprocessor` trait.
 - ⬜ Tcl-style or new scripting/batch interface (parity with `tclCommands/`).
 - ⬜ Project file format (load/save `.FlatPrj` or a new format).
 
-## Phase 7 — GUI ⬜ (largest surface, ~28 K LOC PyQt6)
+## Phase 7 — GUI 🔶 (largest surface, ~28 K LOC PyQt6)
 
-Decision required before starting:
+**Decision made: `eframe`/`egui`.** A working scaffold (`fc-gui`, binary
+`flatcam-gui`) now compiles: it opens Gerber/Excellon files, renders geometry on
+a pan/zoom 2D canvas, runs isolation/paint, and overlays tool-paths. Remaining
+GUI work below.
+
+Toolkit comparison (kept for reference):
 
 | Toolkit | Pros | Cons |
 |---------|------|------|
@@ -97,9 +102,9 @@ Decision required before starting:
 | **iced** | Elm architecture, idiomatic Rust | heavier, slower iteration |
 
 Sub-work:
-- ⬜ 2D/3D plot canvas (replaces VisPy/OpenGL `PlotCanvas` + matplotlib legacy) —
-  render `geo` geometry via wgpu; this is where Python stutters most.
-- ⬜ Object tree / notebook / preferences UI.
+- ✅ 2D canvas scaffold (pan/zoom, ring rendering, tool-path overlay) — `fc-gui`.
+- ⬜ Filled/triangulated copper rendering + GPU batching for large boards.
+- ⬜ Object tree / notebook / preferences UI; save G-code from the GUI.
 - ⬜ Interactive editors (Group: GUI-heavy): Geo, **Gerber** (largest, ~7 K LOC),
   Excellon, G-code, Text editors.
 - ⬜ Tool plugin panels for all Phase 2–3 operations.

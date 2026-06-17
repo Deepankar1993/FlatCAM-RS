@@ -7,6 +7,7 @@ members = [
     "crates/fc-gcode",
     "crates/fc-cam",
     "crates/fc-cli",
+    "crates/fc-gui",
 ]
 exclude = ["_nettest"]
 
