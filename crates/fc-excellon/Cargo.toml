@@ -1,0 +1,9 @@
+[package]
+name = "fc-excellon"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+fc-geo = { path = "../fc-geo" }
+geo.workspace = true
+thiserror.workspace = true

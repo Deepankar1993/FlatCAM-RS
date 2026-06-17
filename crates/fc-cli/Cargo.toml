@@ -1,0 +1,16 @@
+[package]
+name = "fc-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "flatcam-rs"
+path = "src/main.rs"
+
+[dependencies]
+fc-geo = { path = "../fc-geo" }
+fc-gerber = { path = "../fc-gerber" }
+fc-excellon = { path = "../fc-excellon" }
+fc-gcode = { path = "../fc-gcode" }
+fc-cam = { path = "../fc-cam" }
+anyhow.workspace = true

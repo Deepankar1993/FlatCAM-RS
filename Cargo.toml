@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/fc-geo",
+    "crates/fc-gerber",
+    "crates/fc-excellon",
+    "crates/fc-gcode",
+    "crates/fc-cam",
+    "crates/fc-cli",
+]
+exclude = ["_nettest"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["FlatCAM-RS port"]
+repository = "https://github.com/Deepankar1993/FlatCAM-Plus"
+
+[workspace.dependencies]
+geo = "0.29"
+geo-buffer = "0.2"
+regex = "1"
+thiserror = "2"
+anyhow = "1"
+
+# Optimized release profile — the whole point of the Rust port is speed.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"

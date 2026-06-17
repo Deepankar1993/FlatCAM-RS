@@ -1,0 +1,11 @@
+[package]
+name = "fc-cam"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+fc-geo = { path = "../fc-geo" }
+fc-gerber = { path = "../fc-gerber" }
+fc-excellon = { path = "../fc-excellon" }
+fc-gcode = { path = "../fc-gcode" }
+geo.workspace = true

@@ -1,0 +1,10 @@
+[package]
+name = "fc-gerber"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+fc-geo = { path = "../fc-geo" }
+geo.workspace = true
+regex.workspace = true
+thiserror.workspace = true
