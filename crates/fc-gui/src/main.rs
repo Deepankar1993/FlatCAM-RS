@@ -87,10 +87,20 @@ impl Default for CamParams {
 #[derive(Default)]
 struct FlatCamApp {
     gerber: Option<fc_gerber::Gerber>,
+    excellon: Option<fc_excellon::Excellon>,
     layers: Vec<Layer>,
     camera: Camera,
     params: CamParams,
     status: String,
+    last_gcode: Option<String>,
+    preproc: String,
+}
+
+fn map_units(u: fc_gerber::Units) -> fc_gcode::Units {
+    match u {
+        fc_gerber::Units::Mm => fc_gcode::Units::Mm,
+        fc_gerber::Units::Inch => fc_gcode::Units::Inch,
+    }
 }
 
 impl FlatCamApp {
@@ -124,6 +134,8 @@ impl FlatCamApp {
                     }];
                     self.camera.initialized = false;
                     self.status = format!("Loaded {} ({} drills)", path, e.drill_count());
+                    self.excellon = Some(e);
+                    self.gerber = None;
                 }
                 Err(err) => self.status = format!("Excellon parse error: {err}"),
             }
@@ -164,7 +176,7 @@ impl FlatCamApp {
             ..Default::default()
         };
         let job = fc_cam::isolation(g, &params);
-        self.add_toolpath_layer("Isolation", &job.kind, egui::Color32::from_rgb(60, 220, 120));
+        self.add_toolpath_layer("Isolation", &job, egui::Color32::from_rgb(60, 220, 120));
     }
 
     fn run_paint(&mut self) {
@@ -178,24 +190,39 @@ impl FlatCamApp {
             overlap: p.overlap.max(0.1),
             ..Default::default()
         };
-        let paths = fc_cam::paint_region(&g.solid_geometry, &pp);
-        self.layers.push(Layer {
-            name: "Paint".into(),
-            rings: paths,
-            color: egui::Color32::from_rgb(230, 90, 200),
-            closed: false,
-        });
-        self.status = "Paint computed".into();
+        let units = map_units(g.units);
+        let job = fc_cam::paint_job(&g.solid_geometry, &pp, units);
+        self.add_toolpath_layer("Paint", &job, egui::Color32::from_rgb(230, 90, 200));
     }
 
-    fn add_toolpath_layer(&mut self, name: &str, kind: &JobKind, color: egui::Color32) {
-        let rings = match kind {
+    fn add_toolpath_layer(&mut self, name: &str, job: &fc_gcode::CncJob, color: egui::Color32) {
+        let rings = match &job.kind {
             JobKind::Mill { paths } => paths.clone(),
             JobKind::Drill { points } => points.iter().map(|&p| vec![p]).collect(),
         };
         let n = rings.len();
         self.layers.push(Layer { name: name.into(), rings, color, closed: false });
-        self.status = format!("{name}: {n} path(s)");
+        // Generate G-code with the selected preprocessor and keep it for export.
+        let pp = fc_gcode::dialects::by_name(&self.preproc)
+            .unwrap_or_else(|| Box::new(fc_gcode::Grbl));
+        self.last_gcode = Some(job.to_gcode(pp.as_ref()));
+        self.status = format!("{name}: {n} path(s) — G-code ready ({})", pp.name());
+    }
+
+    fn save_gcode(&mut self) {
+        let Some(gcode) = &self.last_gcode else {
+            self.status = "Nothing to save — run Isolation or Paint first".into();
+            return;
+        };
+        if let Some(path) = rfd::FileDialog::new()
+            .set_file_name("output.gcode")
+            .save_file()
+        {
+            match std::fs::write(&path, gcode) {
+                Ok(()) => self.status = format!("Saved {}", path.to_string_lossy()),
+                Err(e) => self.status = format!("Save failed: {e}"),
+            }
+        }
     }
 }
 
@@ -215,6 +242,10 @@ impl eframe::App for FlatCamApp {
                 if ui.button("Paint").clicked() {
                     self.run_paint();
                 }
+                ui.separator();
+                if ui.button("Save G-code…").clicked() {
+                    self.save_gcode();
+                }
                 if ui.button("Clear tool-paths").clicked() {
                     self.layers.retain(|l| l.name == "Copper" || l.name == "Drills");
                     self.status = "Cleared tool-paths".into();
@@ -228,6 +259,18 @@ impl eframe::App for FlatCamApp {
             ui.add(egui::Slider::new(&mut p.tool_dia, 0.05..=3.0).text("Tool Ø"));
             ui.add(egui::Slider::new(&mut p.passes, 1..=8).text("Passes"));
             ui.add(egui::Slider::new(&mut p.overlap, 0.0..=0.9).text("Overlap"));
+            ui.separator();
+            ui.label("Preprocessor");
+            if self.preproc.is_empty() {
+                self.preproc = "grbl".into();
+            }
+            egui::ComboBox::from_id_salt("preproc")
+                .selected_text(self.preproc.clone())
+                .show_ui(ui, |ui| {
+                    for name in ["grbl", "marlin", "default", "grbl_no_m6", "grbl_laser", "roland"] {
+                        ui.selectable_value(&mut self.preproc, name.to_string(), name);
+                    }
+                });
             ui.separator();
             ui.heading("Layers");
             for l in &self.layers {
