@@ -17,6 +17,10 @@ use fc_gcode::{JobKind, Polyline, Units};
 use fc_geo::MultiPolygon;
 use std::collections::HashMap;
 
+mod icons;
+mod viewport;
+use viewport::format_tick;
+
 fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1200.0, 800.0]),
@@ -101,6 +105,84 @@ impl Camera {
             self.center.1 - ((p.y - c.y) / s) as f64,
         )
     }
+    /// A sane default view for an empty project: roughly a 45×25 mm window with
+    /// the origin toward the lower-left, like the stock FlatCAM empty canvas.
+    /// Critically, this also gives the camera a non-zero `scale` so the cursor
+    /// world-coordinate readout is valid before any file is opened.
+    fn default_view(&mut self, rect: egui::Rect) {
+        self.fit((-12.0, -3.0, 33.0, 20.0), rect);
+    }
+}
+
+// ----- theme / palette -----
+
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum Theme {
+    #[default]
+    Light,
+    Dark,
+}
+
+/// Colours for the plot canvas (grid, axes, rulers, cursor) per theme.
+struct Palette {
+    plot_bg: egui::Color32,
+    grid_minor: egui::Color32,
+    grid_major: egui::Color32,
+    axis: egui::Color32,
+    ruler_text: egui::Color32,
+    cursor: egui::Color32,
+}
+
+impl Theme {
+    fn palette(self) -> Palette {
+        match self {
+            Theme::Light => Palette {
+                plot_bg: egui::Color32::from_gray(252),
+                grid_minor: egui::Color32::from_gray(228),
+                grid_major: egui::Color32::from_gray(198),
+                axis: egui::Color32::from_rgb(224, 122, 122),
+                ruler_text: egui::Color32::from_gray(96),
+                cursor: egui::Color32::from_rgb(214, 40, 40),
+            },
+            Theme::Dark => Palette {
+                plot_bg: egui::Color32::from_gray(16),
+                grid_minor: egui::Color32::from_gray(38),
+                grid_major: egui::Color32::from_gray(64),
+                axis: egui::Color32::from_rgb(170, 72, 72),
+                ruler_text: egui::Color32::from_gray(150),
+                cursor: egui::Color32::from_rgb(255, 80, 80),
+            },
+        }
+    }
+    fn visuals(self) -> egui::Visuals {
+        match self {
+            Theme::Light => egui::Visuals::light(),
+            Theme::Dark => egui::Visuals::dark(),
+        }
+    }
+}
+
+/// A vertical icon-over-label toolbar button drawn with vector [`icons`]
+/// (no emoji-font dependency). The whole 52×44 cell is clickable and shows a
+/// hover/active background from the active theme.
+fn tool_button(ui: &mut egui::Ui, icon: &str, label: &str) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(52.0, 44.0), egui::Sense::click());
+    let wv = ui.style().interact(&resp);
+    if resp.hovered() || resp.is_pointer_button_down_on() {
+        ui.painter().rect_filled(rect, egui::Rounding::same(4.0), wv.bg_fill);
+    }
+    let color = wv.fg_stroke.color;
+    let icon_rect =
+        egui::Rect::from_center_size(egui::pos2(rect.center().x, rect.top() + 15.0), egui::vec2(22.0, 22.0));
+    icons::draw_tool_icon(icon, ui.painter(), icon_rect, color);
+    ui.painter().text(
+        egui::pos2(rect.center().x, rect.bottom() - 3.0),
+        egui::Align2::CENTER_BOTTOM,
+        label,
+        egui::FontId::proportional(9.5),
+        color,
+    );
+    resp
 }
 
 // ----- editor state -----
@@ -153,6 +235,9 @@ struct FlatCamApp {
     show_settings: bool,
     show_gcode: bool,
     cursor_world: Option<(f64, f64)>,
+    theme: Theme,
+    /// Theme last pushed to egui, so we only call `set_visuals` on a change.
+    applied_theme: Option<Theme>,
     // --- laser ---
     beam: fc_laser::BeamShape,
     /// Z-dependent astigmatic beam model; used when `use_astig` is set.
@@ -916,53 +1001,176 @@ impl FlatCamApp {
         }
         b
     }
+
+    /// Draw the measurement grid, the red X/Y origin axes, and numeric ruler
+    /// labels along the bottom (X) and left (Y) edges — the CAD canvas backdrop.
+    fn draw_grid(&self, painter: &egui::Painter, rect: egui::Rect, pal: &Palette) {
+        let scale = self.camera.scale.max(1e-6) as f64;
+        let tl = self.camera.to_world(rect.left_top(), rect);
+        let br = self.camera.to_world(rect.right_bottom(), rect);
+        let (min_x, max_x) = (tl.0.min(br.0), tl.0.max(br.0));
+        let (min_y, max_y) = (tl.1.min(br.1), tl.1.max(br.1));
+
+        let major = viewport::major_step(scale, 80.0);
+        let minor = viewport::nice_step(major / 5.0);
+
+        // Grid lines for a given step; `viewport::ticks` caps the count so an
+        // extreme zoom-out can never schedule a runaway number of draws.
+        let grid = |step: f64, color: egui::Color32| {
+            let stroke = egui::Stroke::new(1.0, color);
+            for x in viewport::ticks(min_x, max_x, step, 600) {
+                let sx = self.camera.to_screen((x, 0.0), rect).x;
+                painter.line_segment([egui::pos2(sx, rect.top()), egui::pos2(sx, rect.bottom())], stroke);
+            }
+            for y in viewport::ticks(min_y, max_y, step, 600) {
+                let sy = self.camera.to_screen((0.0, y), rect).y;
+                painter.line_segment([egui::pos2(rect.left(), sy), egui::pos2(rect.right(), sy)], stroke);
+            }
+        };
+        grid(minor, pal.grid_minor);
+        grid(major, pal.grid_major);
+
+        // Red origin axes (drawn only when 0 is within view).
+        let o = self.camera.to_screen((0.0, 0.0), rect);
+        let axis = egui::Stroke::new(1.2, pal.axis);
+        let x_on = o.x >= rect.left() && o.x <= rect.right();
+        let y_on = o.y >= rect.top() && o.y <= rect.bottom();
+        if x_on {
+            painter.line_segment([egui::pos2(o.x, rect.top()), egui::pos2(o.x, rect.bottom())], axis);
+        }
+        if y_on {
+            painter.line_segment([egui::pos2(rect.left(), o.y), egui::pos2(rect.right(), o.y)], axis);
+        }
+
+        // Ruler labels at the major step, placed ALONG the axes when on-screen
+        // (so the numbers sit on the red lines like stock FlatCAM), else pinned
+        // to the canvas edge.
+        let font = egui::FontId::proportional(10.0);
+        let y_baseline = if y_on { o.y - 1.0 } else { rect.bottom() - 1.0 };
+        for x in viewport::ticks(min_x, max_x, major, 200) {
+            let sx = self.camera.to_screen((x, 0.0), rect).x;
+            painter.text(egui::pos2(sx + 2.0, y_baseline), egui::Align2::LEFT_BOTTOM, format_tick(x), font.clone(), pal.ruler_text);
+        }
+        let x_anchor = if x_on { o.x + 3.0 } else { rect.left() + 2.0 };
+        for y in viewport::ticks(min_y, max_y, major, 200) {
+            let sy = self.camera.to_screen((0.0, y), rect).y;
+            painter.text(egui::pos2(x_anchor, sy - 1.0), egui::Align2::LEFT_BOTTOM, format_tick(y), font.clone(), pal.ruler_text);
+        }
+    }
 }
 
 impl eframe::App for FlatCamApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Apply the active theme only when it changes (avoids per-frame repaints).
+        if self.applied_theme != Some(self.theme) {
+            ctx.set_visuals(self.theme.visuals());
+            self.applied_theme = Some(self.theme);
+        }
+
+        // --- menu bar ---
+        egui::TopBottomPanel::top("menubar").show(ctx, |ui| {
+            egui::menu::bar(ui, |ui| {
+                ui.menu_button("File", |ui| {
+                    if ui.button("Open…").clicked() {
+                        if let Some(path) = rfd::FileDialog::new().pick_file() {
+                            self.load_path(&path.to_string_lossy());
+                        }
+                        ui.close_menu();
+                    }
+                    if ui.button("Open Project").clicked() {
+                        self.open_project();
+                        ui.close_menu();
+                    }
+                    if ui.button("Save Project").clicked() {
+                        self.save_project();
+                        ui.close_menu();
+                    }
+                    if ui.button("Save G-code…").clicked() {
+                        self.save_gcode();
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Quit").clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+                ui.menu_button("Edit", |ui| {
+                    if ui.button("Settings…").clicked() {
+                        self.show_settings = true;
+                        ui.close_menu();
+                    }
+                });
+                ui.menu_button("View", |ui| {
+                    if ui.button("Zoom Fit").clicked() {
+                        self.camera.initialized = false;
+                        ui.close_menu();
+                    }
+                    ui.checkbox(&mut self.fill_on, "Fill regions");
+                    ui.separator();
+                    ui.label("Theme");
+                    ui.radio_value(&mut self.theme, Theme::Light, "Light");
+                    ui.radio_value(&mut self.theme, Theme::Dark, "Dark");
+                });
+                ui.menu_button("Plugins", |ui| {
+                    if ui.button("G-code viewer").clicked() {
+                        self.show_gcode = true;
+                        ui.close_menu();
+                    }
+                });
+                ui.menu_button("Help", |ui| {
+                    if ui.button("About").clicked() {
+                        self.status = "FlatCAM-RS — a Rust port of FlatCAM Evo".into();
+                        ui.close_menu();
+                    }
+                });
+            });
+        });
+
+        // --- icon toolbar ---
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
-                if ui.button("Open…").clicked() {
+                if tool_button(ui, "open", "Open").clicked() {
                     if let Some(path) = rfd::FileDialog::new().pick_file() {
                         self.load_path(&path.to_string_lossy());
                     }
                 }
-                if ui.button("Open Project").clicked() {
+                if tool_button(ui, "project", "Project").clicked() {
                     self.open_project();
                 }
-                if ui.button("Save Project").clicked() {
+                if tool_button(ui, "save", "Save").clicked() {
                     self.save_project();
                 }
                 ui.separator();
-                if ui.button("Isolation").clicked() {
+                if tool_button(ui, "isolation", "Isolation").clicked() {
                     self.run_isolation();
                 }
-                if ui.button("Paint").clicked() {
+                if tool_button(ui, "paint", "Paint").clicked() {
                     self.run_paint();
                 }
-                if ui.button("NCC").clicked() {
+                if tool_button(ui, "ncc", "NCC").clicked() {
                     self.run_ncc();
                 }
-                if ui.button("Cutout").clicked() {
+                if tool_button(ui, "cutout", "Cutout").clicked() {
                     self.run_cutout();
                 }
-                if ui.button("Drilling").clicked() {
+                if tool_button(ui, "drilling", "Drilling").clicked() {
                     self.run_drilling();
                 }
                 ui.separator();
-                if ui.button("Zoom Fit").clicked() {
+                if tool_button(ui, "zoomfit", "Zoom Fit").clicked() {
                     self.camera.initialized = false;
                 }
-                ui.checkbox(&mut self.fill_on, "Fill");
-                if ui.button("Settings").clicked() {
-                    self.show_settings = !self.show_settings;
-                }
-                if ui.button("G-code").clicked() {
+                if tool_button(ui, "gcode", "G-code").clicked() {
                     self.show_gcode = !self.show_gcode;
                 }
-                if ui.button("Save G-code…").clicked() {
+                if tool_button(ui, "savegcode", "Save G").clicked() {
                     self.save_gcode();
                 }
+                if tool_button(ui, "settings", "Settings").clicked() {
+                    self.show_settings = !self.show_settings;
+                }
+                ui.separator();
+                ui.checkbox(&mut self.fill_on, "Fill");
             });
         });
 
@@ -1076,32 +1284,47 @@ impl eframe::App for FlatCamApp {
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label(if self.status.is_empty() { "Ready — Open a Gerber/Excellon/SVG/DXF/PDF file." } else { &self.status });
-                if let Some((x, y)) = self.cursor_world {
+                let msg = if self.status.is_empty() {
+                    "Ready — Open a Gerber/Excellon/SVG/DXF/PDF file."
+                } else {
+                    self.status.as_str()
+                };
+                ui.label(msg);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label("[mm]");
                     ui.separator();
-                    ui.monospace(format!("X {x:.3}  Y {y:.3}"));
-                }
+                    match self.cursor_world {
+                        Some((x, y)) => ui.monospace(format!("X {x:8.3}   Y {y:8.3}")),
+                        None => ui.monospace("X    —       Y    —"),
+                    };
+                });
             });
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            let pal = self.theme.palette();
             let (response, painter) = ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
             let rect = response.rect;
-            painter.rect_filled(rect, 0.0, egui::Color32::from_gray(18));
+            painter.rect_filled(rect, 0.0, pal.plot_bg);
 
             if !self.camera.initialized {
-                if let Some(b) = self.all_bounds() {
-                    self.camera.fit(b, rect);
+                match self.all_bounds() {
+                    Some(b) => self.camera.fit(b, rect),
+                    None => self.camera.default_view(rect),
                 }
             }
+            // Measurement grid + axes + rulers, behind everything.
+            self.draw_grid(&painter, rect, &pal);
             if response.dragged() {
                 let d = response.drag_delta();
                 self.camera.center.0 -= (d.x / self.camera.scale.max(1e-6)) as f64;
                 self.camera.center.1 += (d.y / self.camera.scale.max(1e-6)) as f64;
             }
-            let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+            // Zoom only when the pointer is over the canvas; clamp the scale so
+            // it can never reach 0 (which would re-break the coordinate readout).
+            let scroll = if response.hovered() { ui.input(|i| i.smooth_scroll_delta.y) } else { 0.0 };
             if scroll.abs() > 0.0 {
-                self.camera.scale *= (scroll * 0.002).exp();
+                self.camera.scale = (self.camera.scale * (scroll * 0.002).exp()).clamp(1e-4, 1e6);
             }
             self.cursor_world = response.hover_pos().map(|p| self.camera.to_world(p, rect));
             if self.editor_active() {
@@ -1177,6 +1400,24 @@ impl eframe::App for FlatCamApp {
                     for p in &pts {
                         painter.circle_filled(*p, 2.0, vert);
                     }
+                }
+            }
+
+            // Cursor crosshair + live coordinate tag.
+            if let Some(p) = response.hover_pos() {
+                let cs = egui::Stroke::new(1.0, pal.cursor);
+                painter.line_segment([egui::pos2(p.x - 8.0, p.y), egui::pos2(p.x + 8.0, p.y)], cs);
+                painter.line_segment([egui::pos2(p.x, p.y - 8.0), egui::pos2(p.x, p.y + 8.0)], cs);
+                if let Some((wx, wy)) = self.cursor_world {
+                    let lx = (p.x + 10.0).min(rect.right() - 70.0);
+                    let ly = (p.y - 10.0).max(rect.top() + 14.0);
+                    painter.text(
+                        egui::pos2(lx, ly),
+                        egui::Align2::LEFT_BOTTOM,
+                        format!("{}, {}", format_tick(wx), format_tick(wy)),
+                        egui::FontId::proportional(11.0),
+                        pal.ruler_text,
+                    );
                 }
             }
         });
