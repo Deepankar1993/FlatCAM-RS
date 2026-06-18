@@ -51,6 +51,8 @@ struct StoredObj {
     geom: StoredGeom,
     /// Cached fill triangles (region kinds only), for filled rendering.
     fill: Vec<[(f64, f64); 3]>,
+    /// G-code for CNCJob objects (the result of a CAM op).
+    gcode: Option<String>,
 }
 
 fn make_stored(kind: ObjectKind, units: Units, geom: StoredGeom) -> StoredObj {
@@ -58,7 +60,7 @@ fn make_stored(kind: ObjectKind, units: Units, geom: StoredGeom) -> StoredObj {
         StoredGeom::Region(mp) => fc_geo::triangulate(mp),
         _ => Vec::new(),
     };
-    StoredObj { kind, units, geom, fill }
+    StoredObj { kind, units, geom, fill, gcode: None }
 }
 
 // ----- camera -----
@@ -145,6 +147,8 @@ struct FlatCamApp {
     fill_on: bool,
     prefs: fc_app::Preferences,
     show_settings: bool,
+    show_gcode: bool,
+    cursor_world: Option<(f64, f64)>,
     // editor
     editor: Editor,
     edit_tool: EditTool,
@@ -300,6 +304,9 @@ impl FlatCamApp {
             Some(source.to_string()),
             None,
         );
+        if let Some(o) = self.store.get_mut(&name) {
+            o.gcode = self.last_gcode.clone();
+        }
         self.project.selected = keep; // keep source selected for chaining
         self.status = format!("{name}: {n} path(s) — G-code ready ({})", pp.name());
     }
@@ -392,22 +399,61 @@ impl FlatCamApp {
         self.last_gcode = Some(gcode);
         let n = all.len();
         let keep = self.project.selected.clone();
-        self.add_object(&format!("{name}_drill"), ObjectKind::CncJob, units, StoredGeom::Cnc(all), Some(name.clone()), None);
+        let dname = self.add_object(&format!("{name}_drill"), ObjectKind::CncJob, units, StoredGeom::Cnc(all), Some(name.clone()), None);
+        if let Some(o) = self.store.get_mut(&dname) {
+            o.gcode = self.last_gcode.clone();
+        }
         self.project.selected = keep;
         self.status = format!("Drilling: {n} holes — G-code ready ({})", pp.name());
     }
 
+    /// G-code of the selected CNCJob object, else the most recent.
+    fn current_gcode(&self) -> Option<String> {
+        if let Some(sel) = &self.project.selected {
+            if let Some(o) = self.store.get(sel) {
+                if let Some(g) = &o.gcode {
+                    return Some(g.clone());
+                }
+            }
+        }
+        self.last_gcode.clone()
+    }
+
     fn save_gcode(&mut self) {
-        let Some(gcode) = &self.last_gcode else {
+        let Some(gcode) = self.current_gcode() else {
             self.status = "Nothing to save — run a CAM op first".into();
             return;
         };
+        let gcode = &gcode;
         if let Some(path) = rfd::FileDialog::new().set_file_name("output.gcode").save_file() {
             match std::fs::write(&path, gcode) {
                 Ok(()) => self.status = format!("Saved {}", path.to_string_lossy()),
                 Err(e) => self.status = format!("Save failed: {e}"),
             }
         }
+    }
+
+    /// Apply a positioning transform (mirror bottom / move to origin) to the
+    /// selected Region object, rebuilding its cached geometry.
+    fn transform_selected(&mut self, op: &str) {
+        let Some(sel) = self.project.selected.clone() else { return };
+        let (kind, units, mp) = match self.store.get(&sel) {
+            Some(StoredObj { kind, units, geom: StoredGeom::Region(mp), .. }) => {
+                (*kind, *units, mp.clone())
+            }
+            _ => {
+                self.status = "Select a region object (Gerber/Geometry/SVG) first".into();
+                return;
+            }
+        };
+        let new_mp = match op {
+            "mirror" => fc_geo::transform::mirror_bottom(&mp),
+            "origin" => fc_geo::transform::normalize_origin(&mp),
+            _ => return,
+        };
+        self.store.insert(sel.clone(), make_stored(kind, units, StoredGeom::Region(new_mp)));
+        self.camera.initialized = false;
+        self.status = format!("{op} applied to {sel}");
     }
 
     /// Copy persisted preferences into the active CAM parameters.
@@ -651,9 +697,15 @@ impl eframe::App for FlatCamApp {
                     self.run_drilling();
                 }
                 ui.separator();
+                if ui.button("Zoom Fit").clicked() {
+                    self.camera.initialized = false;
+                }
                 ui.checkbox(&mut self.fill_on, "Fill");
                 if ui.button("Settings").clicked() {
                     self.show_settings = !self.show_settings;
+                }
+                if ui.button("G-code").clicked() {
+                    self.show_gcode = !self.show_gcode;
                 }
                 if ui.button("Save G-code…").clicked() {
                     self.save_gcode();
@@ -699,7 +751,13 @@ impl eframe::App for FlatCamApp {
         });
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            ui.label(if self.status.is_empty() { "Ready — Open a Gerber/Excellon/SVG/DXF file." } else { &self.status });
+            ui.horizontal(|ui| {
+                ui.label(if self.status.is_empty() { "Ready — Open a Gerber/Excellon/SVG/DXF/PDF file." } else { &self.status });
+                if let Some((x, y)) = self.cursor_world {
+                    ui.separator();
+                    ui.monospace(format!("X {x:.3}  Y {y:.3}"));
+                }
+            });
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -721,6 +779,7 @@ impl eframe::App for FlatCamApp {
             if scroll.abs() > 0.0 {
                 self.camera.scale *= (scroll * 0.002).exp();
             }
+            self.cursor_world = response.hover_pos().map(|p| self.camera.to_world(p, rect));
             if self.editor_active() {
                 if response.clicked() {
                     if let Some(pos) = response.interact_pointer_pos() {
@@ -820,6 +879,27 @@ impl eframe::App for FlatCamApp {
             });
         });
         self.show_settings = open;
+
+        // G-code viewer window (selected CNCJob, else most recent).
+        let mut gopen = self.show_gcode;
+        egui::Window::new("G-code").open(&mut gopen).default_size([440.0, 520.0]).show(ctx, |ui| {
+            match self.current_gcode() {
+                Some(text) => {
+                    ui.label(format!("{} lines", text.lines().count()));
+                    if ui.button("Save…").clicked() {
+                        self.save_gcode();
+                    }
+                    ui.separator();
+                    egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
+                        ui.monospace(text);
+                    });
+                }
+                None => {
+                    ui.label("No G-code yet — run a CAM op or select a CNCJob object.");
+                }
+            }
+        });
+        self.show_gcode = gopen;
     }
 }
 
@@ -866,7 +946,7 @@ impl FlatCamApp {
                 if ui.button("Dup").clicked() {
                     if let Some(n) = self.project.duplicate(&sel) {
                         if let Some(s) = self.store.get(&sel) {
-                            let clone = StoredObj { kind: s.kind, units: s.units, geom: clone_geom(&s.geom), fill: s.fill.clone() };
+                            let clone = StoredObj { kind: s.kind, units: s.units, geom: clone_geom(&s.geom), fill: s.fill.clone(), gcode: s.gcode.clone() };
                             self.store.insert(n, clone);
                         }
                     }
@@ -878,6 +958,17 @@ impl FlatCamApp {
                     self.project.remove_cascade(&sel);
                     self.store.remove(&sel);
                     self.camera.initialized = false;
+                }
+            });
+            ui.horizontal(|ui| {
+                if ui.button("Mirror").clicked() {
+                    self.transform_selected("mirror");
+                }
+                if ui.button("Origin").clicked() {
+                    self.transform_selected("origin");
+                }
+                if ui.button("Export G-code…").clicked() {
+                    self.save_gcode();
                 }
             });
             ui.horizontal(|ui| {

@@ -2,6 +2,21 @@
 
 All notable changes to the Rust port are recorded here.
 
+## [0.22.0] — desktop app: complete GUI
+
+### Added (GUI)
+- **Per-object G-code**: each CAM result stores its G-code; a **G-code viewer
+  window** (toolbar "G-code") shows the selected CNCJob's (or latest) program with
+  line count + Save.
+- **Object positioning**: tree **Mirror** / **Origin** actions (bottom-layer
+  mirror, move-to-origin) on the selected region — the real-world board step.
+- **Per-object Export G-code** from the tree.
+- **Zoom Fit** button and a **live cursor coordinate readout** in the status bar.
+
+### Verified
+- `cargo test --workspace`: 483 passed, 0 warnings; release `flatcam-gui` builds
+  (5.7 MB). Validated by loading the real KiCad SmartPowerMonitor board.
+
 ## [0.21.0] — real-world KiCad validation + board positioning
 
 Validated end-to-end against a real KiCad board (SmartPowerMonitor): all layers
