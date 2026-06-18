@@ -9,6 +9,7 @@ members = [
     "crates/fc-cli",
     "crates/fc-gui",
     "crates/fc-svg",
+    "crates/fc-app",
 ]
 exclude = ["_nettest"]
 
@@ -25,6 +26,8 @@ geo-buffer = "0.2"
 regex = "1"
 thiserror = "2"
 anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 # Optimized release profile — the whole point of the Rust port is speed.
 [profile.release]

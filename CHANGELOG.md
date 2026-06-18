@@ -2,6 +2,17 @@
 
 All notable changes to the Rust port are recorded here.
 
+## [0.8.0] — Phase 6: project model
+
+### Added
+- **`fc-app`** — GUI-free project model (`ObjectCollection` + project
+  persistence): ordered named objects with kind/source/options, add/get/remove,
+  JSON save/load with a versioned schema. Geometry regenerated from source, not
+  serialized. (5 tests)
+
+### Verified
+- `cargo test --workspace`: 124 passed, 0 warnings.
+
 ## [0.7.0] — Phase 4: SVG import
 
 ### Added

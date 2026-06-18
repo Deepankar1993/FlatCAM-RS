@@ -83,11 +83,11 @@ common remainder behind the existing `Preprocessor` trait.
 - ⬜ ISEL CNC / ICP, Repetier, Berta, NCCAD9, Line_xyz
 - ⬜ Toolchange manual / probe (MACH3), solder-paste dispensing dialects
 
-## Phase 6 — Application shell (headless project model) ⬜
+## Phase 6 — Application shell (headless project model) 🔶
 
-- ⬜ `fc-app`: object collection, project (open/save), defaults/options
-  (`LoudDict` analogue), units handling, object kinds (gerber/excellon/geometry/
-  cncjob). GUI-free so it stays testable.
+- ✅ `fc-app`: object collection + project open/save (JSON), per-object options
+  (`LoudDict` analogue), units, object kinds. GUI-free, testable. Geometry is
+  regenerated from source (not serialized), matching FlatCAM.
 - ⬜ Tcl-style or new scripting/batch interface (parity with `tclCommands/`).
 - ⬜ Project file format (load/save `.FlatPrj` or a new format).
 
