@@ -72,6 +72,8 @@ pub use properties::properties;
 pub mod ordering;
 pub mod icons;
 pub use icons::{kind_color, kind_icon, kind_label, kind_sort_index};
+pub mod preferences;
+pub use preferences::Preferences;
 
 impl ProjectObject {
     pub fn new(name: impl Into<String>, kind: ObjectKind) -> Self {

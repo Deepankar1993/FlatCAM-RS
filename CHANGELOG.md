@@ -2,6 +2,21 @@
 
 All notable changes to the Rust port are recorded here.
 
+## [0.18.0] — PDF import + triangulation + toolpath quality + preferences
+
+### Added
+- **`fc-pdf`** (new crate) — PDF vector importer on the verified `lopdf` 0.34 API
+  (content-stream path ops m/l/c/v/y/re/h + fill/stroke → polygons/polylines;
+  CTM ignored in v1). Completes all 6 parsers. 8 tests.
+- **`fc-geo::triangulate`** — ear-cut triangulation (enables filled rendering).
+- **`fc-gcode::optimize`** — collinear-point removal to shrink G-code.
+- **`fc-cam::leadinout`** + **`ramp`** — tangential lead-in/out and ramped plunge.
+- **`fc-app::Preferences`** — JSON-persisted settings model.
+
+### Verified
+- `lopdf` API confirmed from crate source before implementation.
+- `cargo test --workspace`: 450 passed, 0 warnings. 15 crates.
+
 ## [0.17.0] — performance: parallel CAM (rayon)
 
 ### Changed

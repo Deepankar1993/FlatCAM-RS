@@ -15,8 +15,9 @@ members = [
     "crates/fc-editor",
     "crates/fc-script",
     "crates/fc-qr",
+    "crates/fc-pdf",
 ]
-exclude = ["_nettest", "_dxfprobe", "_qrprobe"]
+exclude = ["_nettest", "_dxfprobe", "_qrprobe", "_pdfprobe"]
 
 [workspace.package]
 version = "0.1.0"

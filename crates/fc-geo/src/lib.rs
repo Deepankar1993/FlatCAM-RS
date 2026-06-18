@@ -26,6 +26,8 @@ pub mod hatch;
 pub use hatch::hatch_lines;
 pub mod shapes;
 pub use shapes::{ring, rounded_rect, slot, star};
+pub mod triangulate;
+pub use triangulate::triangulate;
 use std::f64::consts::PI;
 
 /// Default number of segments used to approximate a full circle. FlatCAM's

@@ -17,6 +17,8 @@ pub mod dialects_more;
 pub mod dialects_paste;
 pub mod reader;
 pub use reader::parse_gcode;
+pub mod optimize;
+pub use optimize::{optimize_job, simplify_collinear};
 
 /// Units a job is expressed in (drives `G20`/`G21`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

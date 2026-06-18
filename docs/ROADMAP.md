@@ -72,7 +72,7 @@ Group B/C tools — moderate compute, no new subsystems.
 | ⬜ Font → glyph polygons | `ParseFont` | MED | `ttf-parser` + outline flattening |
 | ✅ HPGL2 | `ParseHPGL2` | — | `fc-hpgl` (IN/SP/PU/PD/PA/PR, abs+rel) |
 | ✅ DXF | `ParseDXF` | — | `fc-dxf` (`dxf` 0.6: Line/Circle/Arc/LwPolyline/Polyline); CLI loads .dxf. Splines/bulge pending |
-| ⬜ PDF vector extract | `ParsePDF` | HIGH | `pdfium-render` / `lopdf` (lowest priority) |
+| ✅ PDF vector extract | `ParsePDF` | — | `fc-pdf` (lopdf 0.34: m/l/c/v/y/re/h + fill/stroke). CTM ignored (v1) |
 
 ## Phase 5 — Preprocessor coverage ⬜
 

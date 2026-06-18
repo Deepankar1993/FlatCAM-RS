@@ -1,0 +1,10 @@
+[package]
+name = "fc-pdf"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+fc-geo = { path = "../fc-geo" }
+geo.workspace = true
+lopdf = "0.34"
+thiserror.workspace = true
