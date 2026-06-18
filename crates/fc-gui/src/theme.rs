@@ -5,47 +5,105 @@
 //! [`egui::Visuals`], and a single [`Theme::apply_style`] entry point that builds
 //! a full [`egui::Style`] (typography + spacing + rounding + visuals) and applies
 //! it to a context. It is a pure styling module: no app state, no I/O.
+//!
+//! The design system is built on the Radix UI colour ramps: the Slate (neutral)
+//! scale provides surfaces/borders/text, and the Blue scale provides the accent.
+//! Visuals are configured per widget state (inactive/hovered/active/open) so that
+//! buttons, combos, sliders, and toggles all read as one coherent, modern system.
 
 use eframe::egui;
 
-/// Install a modern UI font as the default, replacing egui's basic bundled face
-/// (the single biggest "looks like a toy" tell). Tries native Windows fonts
-/// (Segoe UI for text, Consolas for monospace), keeping egui's faces as glyph
-/// fallback. A no-op if none are found, so the app still runs anywhere.
-pub fn install_fonts(ctx: &egui::Context) {
-    let mut fonts = egui::FontDefinitions::default();
-    let mut changed = false;
+// ---------------------------------------------------------------------------
+// Colour helpers
+// ---------------------------------------------------------------------------
 
-    // Proportional UI text.
-    for path in [r"C:\Windows\Fonts\segoeui.ttf", r"C:\Windows\Fonts\SegoeUI.ttf"] {
-        if let Ok(bytes) = std::fs::read(path) {
-            fonts.font_data.insert("ui".to_owned(), egui::FontData::from_owned(bytes));
-            fonts
-                .families
-                .entry(egui::FontFamily::Proportional)
-                .or_default()
-                .insert(0, "ui".to_owned());
-            changed = true;
-            break;
+/// Build a `Color32` from a packed `0xRRGGBB` literal.
+const fn rgb(hex: u32) -> egui::Color32 {
+    egui::Color32::from_rgb(
+        ((hex >> 16) & 0xFF) as u8,
+        ((hex >> 8) & 0xFF) as u8,
+        (hex & 0xFF) as u8,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Design tokens (Radix Slate + Blue)
+// ---------------------------------------------------------------------------
+
+/// A resolved set of semantic colour tokens for one theme. Built from the Radix
+/// Slate (neutral) and Blue (accent) ramps and consumed by [`Theme::visuals`].
+struct Tokens {
+    // Neutral surfaces (Slate scale, light → dark within a theme).
+    panel: egui::Color32,    // outer panel background
+    window: egui::Color32,   // cards / windows / popups
+    faint: egui::Color32,    // faint striped/alt rows (step2)
+    extreme: egui::Color32,  // recessed inputs / code background
+    step3: egui::Color32,    // button at rest
+    step4: egui::Color32,    // button hovered
+    divider: egui::Color32,  // borders / dividers (step6)
+    text_muted: egui::Color32, // secondary text (step11)
+    text: egui::Color32,     // primary text (step12)
+
+    // Accent (Blue scale).
+    accent: egui::Color32,        // base accent (blue9)
+    accent_hover: egui::Color32,  // accent hover (blue10)
+    accent_subtle: egui::Color32, // subtle accent wash (blue3) — selection fill
+    on_accent: egui::Color32,     // text drawn on top of an accent fill
+
+    // Semantics.
+    warning: egui::Color32,
+    error: egui::Color32,
+
+    dark: bool,
+}
+
+impl Tokens {
+    fn light() -> Self {
+        Tokens {
+            panel: rgb(0xfcfcfd),   // slate step1
+            window: rgb(0xffffff),  // white
+            faint: rgb(0xf9f9fb),   // slate step2
+            extreme: rgb(0xffffff), // white (recessed inputs)
+            step3: rgb(0xf0f0f3),   // slate step3
+            step4: rgb(0xe8e8ec),   // slate step4
+            divider: rgb(0xd9d9e0), // slate step6
+            text_muted: rgb(0x60646c), // slate step11
+            text: rgb(0x1c2024),    // slate step12
+            accent: rgb(0x0090ff),
+            accent_hover: rgb(0x0588f0),
+            accent_subtle: rgb(0xe6f4fe), // blue subtle-fill
+            on_accent: rgb(0xffffff),
+            warning: rgb(0xffc53d),
+            error: rgb(0xe5484d),
+            dark: false,
         }
     }
-    // Monospace (G-code, coordinates).
-    for path in [r"C:\Windows\Fonts\consola.ttf", r"C:\Windows\Fonts\Consolas.ttf"] {
-        if let Ok(bytes) = std::fs::read(path) {
-            fonts.font_data.insert("mono".to_owned(), egui::FontData::from_owned(bytes));
-            fonts
-                .families
-                .entry(egui::FontFamily::Monospace)
-                .or_default()
-                .insert(0, "mono".to_owned());
-            changed = true;
-            break;
+
+    fn dark() -> Self {
+        Tokens {
+            panel: rgb(0x18191b),   // slate step2
+            window: rgb(0x212225),  // slate step3
+            faint: rgb(0x18191b),   // slate step2
+            extreme: rgb(0x1a1b1d), // recessed inputs
+            step3: rgb(0x212225),   // slate step3
+            step4: rgb(0x272a2d),   // slate step4
+            divider: rgb(0x363a3f), // slate step6
+            text_muted: rgb(0xb0b4ba), // slate step11
+            text: rgb(0xedeef0),    // slate step12
+            accent: rgb(0x0090ff),
+            accent_hover: rgb(0x3b9eff),
+            accent_subtle: rgb(0x0d2847), // dark blue subtle-fill
+            on_accent: rgb(0xffffff),
+            warning: rgb(0xffc53d),
+            error: rgb(0xe5484d),
+            dark: true,
         }
-    }
-    if changed {
-        ctx.set_fonts(fonts);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Theme
+// ---------------------------------------------------------------------------
 
 /// The application colour scheme.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
@@ -74,36 +132,158 @@ pub struct Palette {
 }
 
 impl Theme {
+    /// The resolved design tokens for this theme.
+    fn tokens(self) -> Tokens {
+        match self {
+            Theme::Light => Tokens::light(),
+            Theme::Dark => Tokens::dark(),
+        }
+    }
+
     /// The plot-canvas colour palette for this theme.
     pub fn palette(self) -> Palette {
         match self {
             Theme::Light => Palette {
-                plot_bg: egui::Color32::from_gray(252),
-                margin_bg: egui::Color32::from_gray(244),
-                grid_minor: egui::Color32::from_gray(228),
-                grid_major: egui::Color32::from_gray(198),
+                plot_bg: rgb(0xffffff),
+                margin_bg: rgb(0xf4f4f6),
+                grid_minor: rgb(0xe8e8ec),
+                grid_major: rgb(0xd9d9e0),
                 axis: egui::Color32::from_rgb(224, 122, 122),
-                ruler_text: egui::Color32::from_gray(96),
+                ruler_text: rgb(0x60646c),
                 cursor: egui::Color32::from_rgb(214, 40, 40),
             },
             Theme::Dark => Palette {
-                plot_bg: egui::Color32::from_gray(16),
-                margin_bg: egui::Color32::from_gray(24),
-                grid_minor: egui::Color32::from_gray(38),
-                grid_major: egui::Color32::from_gray(64),
+                plot_bg: rgb(0x0e0e10),
+                margin_bg: rgb(0x18191b),
+                grid_minor: rgb(0x272a2d),
+                grid_major: rgb(0x363a3f),
                 axis: egui::Color32::from_rgb(170, 72, 72),
-                ruler_text: egui::Color32::from_gray(150),
+                ruler_text: rgb(0xb0b4ba),
                 cursor: egui::Color32::from_rgb(255, 80, 80),
             },
         }
     }
 
-    /// The egui visuals for this theme: the stock light/dark base, lightly tuned.
-    pub fn visuals(self) -> egui::Visuals {
-        match self {
-            Theme::Light => egui::Visuals::light(),
-            Theme::Dark => egui::Visuals::dark(),
+    /// Build a single [`WidgetVisuals`](egui::style::WidgetVisuals) from its parts.
+    fn make_widget(
+        bg: egui::Color32,
+        weak: egui::Color32,
+        stroke: egui::Stroke,
+        fg: egui::Stroke,
+        rounding: egui::Rounding,
+        expansion: f32,
+    ) -> egui::style::WidgetVisuals {
+        egui::style::WidgetVisuals {
+            bg_fill: bg,
+            weak_bg_fill: weak,
+            bg_stroke: stroke,
+            rounding,
+            fg_stroke: fg,
+            expansion,
         }
+    }
+
+    /// The fully-built egui visuals for this theme: the stock light/dark base,
+    /// then comprehensively overridden per widget state from the Radix tokens.
+    pub fn visuals(self) -> egui::Visuals {
+        let t = self.tokens();
+        let mut v = if t.dark {
+            egui::Visuals::dark()
+        } else {
+            egui::Visuals::light()
+        };
+
+        let r6 = egui::Rounding::same(6.0);
+
+        // Per-state widget visuals. `weak_bg_fill` is what buttons paint;
+        // `bg_fill` is what checkboxes/combos paint — both set per state.
+        v.widgets.noninteractive = Self::make_widget(
+            t.panel,
+            t.panel,
+            egui::Stroke::new(1.0, t.divider),
+            egui::Stroke::new(1.0, t.text_muted),
+            r6,
+            0.0,
+        );
+        v.widgets.inactive = Self::make_widget(
+            t.step3,
+            t.step3,
+            egui::Stroke::new(1.0, t.divider),
+            egui::Stroke::new(1.0, t.text),
+            r6,
+            0.0,
+        );
+        v.widgets.hovered = Self::make_widget(
+            t.step4,
+            t.step4,
+            egui::Stroke::new(1.0, t.accent),
+            egui::Stroke::new(1.0, t.text),
+            r6,
+            1.0,
+        );
+        v.widgets.active = Self::make_widget(
+            t.accent,
+            t.accent,
+            egui::Stroke::new(1.0, t.accent_hover),
+            egui::Stroke::new(1.0, t.on_accent),
+            r6,
+            1.0,
+        );
+        v.widgets.open = Self::make_widget(
+            t.step4,
+            t.step4,
+            egui::Stroke::new(1.0, t.divider),
+            egui::Stroke::new(1.0, t.text),
+            r6,
+            0.0,
+        );
+
+        // Surfaces.
+        v.panel_fill = t.panel;
+        v.window_fill = t.window;
+        v.faint_bg_color = t.faint;
+        v.extreme_bg_color = t.extreme;
+        v.code_bg_color = t.extreme;
+
+        // Selection / focus.
+        v.selection = egui::style::Selection {
+            bg_fill: t.accent_subtle,
+            stroke: egui::Stroke::new(2.0, t.accent),
+        };
+
+        // Semantic foreground colours.
+        v.hyperlink_color = t.accent;
+        v.warn_fg_color = t.warning;
+        v.error_fg_color = t.error;
+
+        // Windows / menus.
+        v.window_stroke = egui::Stroke::new(1.0, t.divider);
+        v.window_rounding = egui::Rounding::same(8.0);
+        v.menu_rounding = egui::Rounding::same(6.0);
+        v.window_shadow = egui::epaint::Shadow {
+            offset: egui::vec2(0.0, 12.0),
+            blur: 24.0,
+            spread: 0.0,
+            color: egui::Color32::from_black_alpha(96),
+        };
+        v.popup_shadow = egui::epaint::Shadow {
+            offset: egui::vec2(0.0, 6.0),
+            blur: 16.0,
+            spread: 0.0,
+            color: egui::Color32::from_black_alpha(80),
+        };
+
+        // Controls behaviour / flair.
+        v.slider_trailing_fill = true;
+        v.handle_shape = egui::style::HandleShape::Circle;
+        v.striped = true;
+        v.dark_mode = t.dark;
+
+        // Let per-state `fg_stroke` drive text colour (so hover/active text
+        // changes). Do NOT pin override_text_color.
+        v.override_text_color = None;
+
+        v
     }
 
     /// Build a full egui [`Style`](egui::Style) (typography + spacing + rounding +
@@ -115,9 +295,11 @@ impl Theme {
         style.visuals = self.visuals();
 
         // Typography: comfortable, professional sizes via the text-style map.
+        // Headings use the dedicated bold family registered by `install_fonts`.
+        let bold = FontFamily::Name("ui_bold".into());
         style
             .text_styles
-            .insert(TextStyle::Heading, FontId::new(18.0, FontFamily::Proportional));
+            .insert(TextStyle::Heading, FontId::new(16.0, bold));
         style
             .text_styles
             .insert(TextStyle::Body, FontId::new(13.5, FontFamily::Proportional));
@@ -126,62 +308,95 @@ impl Theme {
             .insert(TextStyle::Button, FontId::new(13.0, FontFamily::Proportional));
         style
             .text_styles
-            .insert(TextStyle::Monospace, FontId::new(12.5, FontFamily::Monospace));
+            .insert(TextStyle::Small, FontId::new(11.0, FontFamily::Proportional));
         style
             .text_styles
-            .insert(TextStyle::Small, FontId::new(10.5, FontFamily::Proportional));
+            .insert(TextStyle::Monospace, FontId::new(12.5, FontFamily::Monospace));
 
         // Spacing: a tidy, professional feel.
-        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-        style.spacing.button_padding = egui::vec2(8.0, 5.0);
-        style.spacing.menu_margin = egui::Margin::same(6.0);
+        style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+        style.spacing.button_padding = egui::vec2(10.0, 6.0);
         style.spacing.window_margin = egui::Margin::same(10.0);
-        style.spacing.slider_width = 130.0;
-        style.spacing.interact_size.y = 24.0;
-        style.spacing.indent = 16.0;
-
-        // Rounding: soften widget corners and windows for a modern look.
-        let rounding = egui::Rounding::same(5.0);
-        style.visuals.widgets.inactive.rounding = rounding;
-        style.visuals.widgets.hovered.rounding = rounding;
-        style.visuals.widgets.active.rounding = rounding;
-        style.visuals.widgets.noninteractive.rounding = rounding;
-        style.visuals.window_rounding = rounding;
-        style.visuals.menu_rounding = rounding;
-
-        // Modern accent: a single brand colour drives selection, links, and the
-        // hover/active tint, so tabs/toggles/sliders read as one coherent system.
-        let accent = self.accent();
-        style.visuals.selection.bg_fill = accent.gamma_multiply(0.45);
-        style.visuals.selection.stroke = egui::Stroke::new(1.0, accent);
-        style.visuals.hyperlink_color = accent;
-        // Subtle accent wash on hover/active backgrounds.
-        let wash = accent.gamma_multiply(if self == Theme::Dark { 0.30 } else { 0.18 });
-        style.visuals.widgets.hovered.weak_bg_fill = wash;
-        style.visuals.widgets.active.weak_bg_fill = accent.gamma_multiply(0.40);
-        style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, accent.gamma_multiply(0.6));
-
-        // Flat, modern panel/canvas tones distinct from the widget surfaces.
-        match self {
-            Theme::Light => {
-                style.visuals.panel_fill = egui::Color32::from_gray(246);
-                style.visuals.window_fill = egui::Color32::from_gray(250);
-            }
-            Theme::Dark => {
-                style.visuals.panel_fill = egui::Color32::from_gray(22);
-                style.visuals.window_fill = egui::Color32::from_gray(26);
-            }
-        }
+        style.spacing.menu_margin = egui::Margin::same(6.0);
+        style.spacing.indent = 14.0;
+        style.spacing.interact_size.y = 26.0;
+        style.spacing.slider_width = 150.0;
+        style.spacing.scroll.bar_width = 9.0;
+        style.spacing.scroll.floating = true;
 
         ctx.set_style(style);
     }
+}
 
-    /// The modern brand/accent colour for this theme (selection, links, hover).
-    fn accent(self) -> egui::Color32 {
-        match self {
-            Theme::Light => egui::Color32::from_rgb(56, 132, 232),
-            Theme::Dark => egui::Color32::from_rgb(96, 165, 250),
-        }
+// ---------------------------------------------------------------------------
+// Fonts
+// ---------------------------------------------------------------------------
+
+/// Install modern UI fonts, replacing egui's basic bundled face (the single
+/// biggest "looks like a toy" tell). Loads native Windows faces: Segoe UI for
+/// proportional text (regular + a separate bold file, since egui does not
+/// synthesize bold), and Consolas for monospace. Each load is guarded, so a
+/// missing file simply leaves egui's fallback in place. If the bold file is
+/// missing but the regular one loaded, the `ui_bold` family falls back to the
+/// regular face so headings still resolve. A no-op if nothing is found.
+pub fn install_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    let mut changed = false;
+    let mut have_ui = false;
+    let mut have_ui_bold = false;
+
+    // Proportional UI text (regular).
+    if let Ok(bytes) = std::fs::read(r"C:\Windows\Fonts\segoeui.ttf") {
+        fonts
+            .font_data
+            .insert("ui".to_owned(), egui::FontData::from_owned(bytes));
+        fonts
+            .families
+            .entry(egui::FontFamily::Proportional)
+            .or_default()
+            .insert(0, "ui".to_owned());
+        changed = true;
+        have_ui = true;
+    }
+
+    // Proportional UI text (bold) — a separate file; egui does not synthesize bold.
+    if let Ok(bytes) = std::fs::read(r"C:\Windows\Fonts\segoeuib.ttf") {
+        fonts
+            .font_data
+            .insert("ui_bold".to_owned(), egui::FontData::from_owned(bytes));
+        changed = true;
+        have_ui_bold = true;
+    }
+
+    // Register the named bold family. Prefer the real bold face; otherwise fall
+    // back to the regular "ui" face so `FontFamily::Name("ui_bold")` resolves.
+    if have_ui_bold {
+        fonts.families.insert(
+            egui::FontFamily::Name("ui_bold".into()),
+            vec!["ui_bold".to_owned()],
+        );
+    } else if have_ui {
+        fonts.families.insert(
+            egui::FontFamily::Name("ui_bold".into()),
+            vec!["ui".to_owned()],
+        );
+    }
+
+    // Monospace (G-code, coordinates).
+    if let Ok(bytes) = std::fs::read(r"C:\Windows\Fonts\consola.ttf") {
+        fonts
+            .font_data
+            .insert("mono".to_owned(), egui::FontData::from_owned(bytes));
+        fonts
+            .families
+            .entry(egui::FontFamily::Monospace)
+            .or_default()
+            .insert(0, "mono".to_owned());
+        changed = true;
+    }
+
+    if changed {
+        ctx.set_fonts(fonts);
     }
 }
 

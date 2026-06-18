@@ -21,6 +21,7 @@ mod icons;
 mod plugins;
 mod theme;
 mod viewport;
+mod widgets;
 use theme::{Palette, Theme};
 use viewport::format_tick;
 
@@ -764,11 +765,14 @@ impl FlatCamApp {
         let rect = resp.rect;
         let c = rect.center();
         let r_px = (rect.width().min(rect.height()) / 2.0) - 8.0;
-        // Axes + unit/power reference circle.
-        let axis = egui::Stroke::new(1.0, egui::Color32::from_gray(90));
+        // Axes + unit/power reference circle, using theme divider tones so they
+        // stay visible in both light and dark mode.
+        let div = ui.visuals().widgets.noninteractive.bg_stroke.color;
+        let div_weak = ui.visuals().faint_bg_color;
+        let axis = egui::Stroke::new(1.0, div);
         painter.line_segment([egui::pos2(c.x - r_px, c.y), egui::pos2(c.x + r_px, c.y)], axis);
         painter.line_segment([egui::pos2(c.x, c.y - r_px), egui::pos2(c.x, c.y + r_px)], axis);
-        painter.circle_stroke(c, r_px, egui::Stroke::new(1.0, egui::Color32::from_gray(60)));
+        painter.circle_stroke(c, r_px, egui::Stroke::new(1.0, div_weak));
         let to_screen = |pts: &[(f64, f64)], scale: f64| -> Vec<egui::Pos2> {
             pts.iter()
                 .map(|&(x, y)| egui::pos2(c.x + (x * scale) as f32, c.y - (y * scale) as f32))
@@ -1110,8 +1114,8 @@ impl FlatCamApp {
             }
             ui.add(slider);
         }
-        ui.add_space(4.0);
-        if ui.add(egui::Button::new(format!("Apply {}", kind.label()))).clicked() {
+        ui.add_space(6.0);
+        if widgets::primary_button(ui, &format!("Apply {}", kind.label())).clicked() {
             self.run_plugin();
         }
         if !self.plugin_report.is_empty() {
@@ -1125,12 +1129,16 @@ impl FlatCamApp {
     /// Properties tab: key/value properties of the selected object.
     fn draw_properties_tab(&mut self, ui: &mut egui::Ui) {
         if let Some(obj) = self.project.selected_object() {
-            for (k, v) in fc_app::properties(obj) {
-                ui.horizontal(|ui| {
-                    ui.strong(k);
-                    ui.label(v);
+            let props = fc_app::properties(obj);
+            widgets::card_frame(ui.style()).show(ui, |ui| {
+                egui::Grid::new("props").num_columns(2).spacing([12.0, 6.0]).striped(true).show(ui, |ui| {
+                    for (k, v) in props {
+                        ui.strong(k);
+                        ui.label(v);
+                        ui.end_row();
+                    }
                 });
-            }
+            });
         } else {
             ui.add_space(8.0);
             ui.weak("No selection.");
@@ -1140,28 +1148,61 @@ impl FlatCamApp {
 
     /// Project tab: the object tree, CAM parameters, editor, and laser panel.
     fn draw_project_tab(&mut self, ui: &mut egui::Ui) {
+        // Empty-state when no project is loaded (pro apps never show a bare panel).
+        if self.project.objects.is_empty() {
+            ui.add_space(24.0);
+            ui.vertical_centered(|ui| {
+                let (r, _) = ui.allocate_exact_size(egui::vec2(44.0, 44.0), egui::Sense::hover());
+                icons::draw_tool_icon("gerber", ui.painter(), r, ui.visuals().widgets.noninteractive.fg_stroke.color);
+                ui.add_space(10.0);
+                ui.label(egui::RichText::new("No project open").heading());
+                ui.label(egui::RichText::new("Open a Gerber, Excellon, SVG, DXF or PDF file to begin.").small().weak());
+                ui.add_space(12.0);
+                if widgets::primary_button(ui, "Open file…").clicked() {
+                    self.open_file_dialog("", &[]);
+                }
+            });
+            ui.add_space(20.0);
+            return;
+        }
+
         self.draw_tree(ui);
-        ui.separator();
-        ui.heading("Parameters");
-        ui.add(egui::Slider::new(&mut self.params.tool_dia, 0.05..=3.0).text("Tool Ø"));
-        ui.add(egui::Slider::new(&mut self.params.passes, 1..=8).text("Passes"));
-        ui.add(egui::Slider::new(&mut self.params.overlap, 0.0..=0.9).text("Overlap"));
-        ui.add(egui::Slider::new(&mut self.params.lead, 0.0..=5.0).text("Lead in/out"));
+        ui.add_space(4.0);
+        widgets::section_header(ui, "Parameters");
         if self.preproc.is_empty() {
             self.preproc = "grbl".into();
         }
-        egui::ComboBox::from_id_salt("preproc")
-            .selected_text(self.preproc.clone())
-            .show_ui(ui, |ui| {
-                for name in ["grbl", "marlin", "default", "grbl_no_m6", "grbl_laser", "roland", "smoothie", "tinyg"] {
-                    ui.selectable_value(&mut self.preproc, name.to_string(), name);
-                }
-            });
-        ui.separator();
+        egui::Grid::new("params").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("Tool Ø");
+            ui.add(egui::DragValue::new(&mut self.params.tool_dia).speed(0.01).range(0.05..=10.0).suffix(" mm"));
+            ui.end_row();
+            ui.label("Passes");
+            ui.add(egui::DragValue::new(&mut self.params.passes).range(1..=20));
+            ui.end_row();
+            ui.label("Overlap");
+            ui.add(egui::DragValue::new(&mut self.params.overlap).speed(0.01).range(0.0..=0.95));
+            ui.end_row();
+            ui.label("Lead in/out");
+            ui.add(egui::DragValue::new(&mut self.params.lead).speed(0.05).range(0.0..=10.0).suffix(" mm"));
+            ui.end_row();
+            ui.label("Preprocessor");
+            egui::ComboBox::from_id_salt("preproc")
+                .selected_text(self.preproc.clone())
+                .show_ui(ui, |ui| {
+                    for name in ["grbl", "marlin", "default", "grbl_no_m6", "grbl_laser", "roland", "smoothie", "tinyg"] {
+                        ui.selectable_value(&mut self.preproc, name.to_string(), name);
+                    }
+                });
+            ui.end_row();
+        });
+        ui.add_space(4.0);
         self.draw_editor_panel(ui);
         ui.separator();
         egui::CollapsingHeader::new("Laser (diode beam)").show(ui, |ui| {
-            ui.checkbox(&mut self.use_astig, "Astigmatic (Z-dependent)");
+            ui.horizontal(|ui| {
+                ui.add(widgets::toggle(&mut self.use_astig));
+                ui.label("Astigmatic (Z-dependent)");
+            });
             if self.use_astig {
                 ui.add(egui::Slider::new(&mut self.astig.waist_x, 0.02..=1.0).text("Waist X"));
                 ui.add(egui::Slider::new(&mut self.astig.waist_y, 0.02..=1.0).text("Waist Y"));
@@ -1187,8 +1228,11 @@ impl FlatCamApp {
                 ui.add(egui::Slider::new(&mut self.beam.angle_deg, 0.0..=180.0).text("Beam angle"));
             }
             ui.horizontal(|ui| {
-                ui.checkbox(&mut self.laser_kerf, "Kerf comp");
-                ui.checkbox(&mut self.laser_dynamic, "M4 dyn");
+                ui.add(widgets::toggle(&mut self.laser_kerf));
+                ui.label("Kerf comp");
+                ui.add_space(10.0);
+                ui.add(widgets::toggle(&mut self.laser_dynamic));
+                ui.label("M4 dyn");
             });
             self.draw_polar_plot(ui);
             ui.horizontal(|ui| {
@@ -1488,7 +1532,8 @@ impl eframe::App for FlatCamApp {
                     self.show_settings = !self.show_settings;
                 }
                 ui.separator();
-                ui.checkbox(&mut self.fill_on, "Fill");
+                ui.add(widgets::toggle(&mut self.fill_on));
+                ui.label("Fill");
             });
         });
 
@@ -1501,13 +1546,16 @@ impl eframe::App for FlatCamApp {
 
         // --- left notebook: Project / Properties / Plugin (stock-FlatCAM layout) ---
         egui::SidePanel::left("notebook").resizable(true).default_width(260.0).show(ctx, |ui| {
-            ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.left_tab, LeftTab::Project, "Project");
-                ui.selectable_value(&mut self.left_tab, LeftTab::Properties, "Properties");
-                ui.selectable_value(&mut self.left_tab, LeftTab::Plugin, "Plugin");
-            });
-            ui.separator();
+            ui.add_space(4.0);
+            let mut tab_idx = self.left_tab as usize;
+            if widgets::segmented(ui, &mut tab_idx, &["Project", "Properties", "Plugin"]).changed() {
+                self.left_tab = match tab_idx {
+                    0 => LeftTab::Project,
+                    1 => LeftTab::Properties,
+                    _ => LeftTab::Plugin,
+                };
+            }
+            ui.add_space(6.0);
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 match self.left_tab {
                     LeftTab::Project => self.draw_project_tab(ui),
@@ -1541,7 +1589,8 @@ impl eframe::App for FlatCamApp {
                         });
                     ui.separator();
                     // Grid-snap toggle.
-                    ui.checkbox(&mut self.grid_snap, "Snap");
+                    ui.label("Snap");
+                    ui.add(widgets::toggle(&mut self.grid_snap));
                     ui.separator();
                     match self.cursor_world {
                         Some((x, y)) => ui.monospace(format!("X {x:8.3}   Y {y:8.3}")),
