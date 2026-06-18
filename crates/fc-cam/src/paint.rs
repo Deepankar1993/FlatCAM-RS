@@ -48,28 +48,41 @@ pub fn paint_region(region: &MultiPolygon<f64>, p: &PaintParams) -> Vec<Polyline
     let step = (p.tool_diameter * (1.0 - p.overlap.clamp(0.0, 0.999))).max(1e-6);
 
     let rings = extract_rings(&inner);
-    let mut paths: Vec<Polyline> = Vec::new();
 
+    // Enumerate scanline rows first (cheap), then compute spans per row in
+    // parallel. Using the row index `k` keeps the zig-zag direction (flip on
+    // odd rows) and output order identical to the sequential version.
+    use rayon::prelude::*;
+    let mut ys: Vec<(usize, f64)> = Vec::new();
     let mut y = miny + step * 0.5;
-    let mut flip = false;
+    let mut k = 0usize;
     while y < maxy {
-        let mut xs = scanline_x(&rings, y);
-        xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        for span in xs.chunks(2) {
-            if span.len() == 2 {
-                let (mut a, mut b) = (span[0], span[1]);
-                if (b - a).abs() < 1e-9 {
-                    continue;
-                }
-                if flip {
-                    std::mem::swap(&mut a, &mut b);
-                }
-                paths.push(vec![(a, y), (b, y)]);
-            }
-        }
-        flip = !flip;
+        ys.push((k, y));
+        k += 1;
         y += step;
     }
+    let mut paths: Vec<Polyline> = ys
+        .par_iter()
+        .flat_map_iter(|&(k, y)| {
+            let mut xs = scanline_x(&rings, y);
+            xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let flip = k % 2 == 1;
+            let mut row: Vec<Polyline> = Vec::new();
+            for span in xs.chunks(2) {
+                if span.len() == 2 {
+                    let (mut a, mut b) = (span[0], span[1]);
+                    if (b - a).abs() < 1e-9 {
+                        continue;
+                    }
+                    if flip {
+                        std::mem::swap(&mut a, &mut b);
+                    }
+                    row.push(vec![(a, y), (b, y)]);
+                }
+            }
+            row
+        })
+        .collect();
 
     let _ = (minx, maxx);
 

@@ -2,6 +2,18 @@
 
 All notable changes to the Rust port are recorded here.
 
+## [0.17.0] — performance: parallel CAM (rayon)
+
+### Changed
+- **`fc-cam` paint/NCC scanline fill** and **`isolation_geo` passes** now run in
+  parallel via `rayon`, with index-ordered collection so output is byte-identical
+  to the sequential version (all 417 tests unchanged). Speeds up dense infill
+  (NCC/paint/pocket) and multi-pass isolation on large boards.
+
+### Verified
+- `cargo test --workspace`: 417 passed, 0 warnings.
+- Release benchmark: dense NCC (0.2 mm tool) ~95 ms; 4-pass isolation ~21 ms.
+
 ## [0.16.0] — QR, script edit commands, paste/toolchange dialects
 
 ### Added

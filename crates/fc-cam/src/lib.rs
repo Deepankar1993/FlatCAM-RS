@@ -159,12 +159,17 @@ pub fn isolation_geo(
 ) -> CncJob {
     let r = params.tool_diameter / 2.0;
     let step = params.tool_diameter * (1.0 - params.overlap.clamp(0.0, 0.999));
-    let mut paths: Vec<Polyline> = Vec::new();
-    for i in 0..params.passes.max(1) {
-        let dist = r + (i as f64) * step;
-        let grown = offset(geometry, dist);
-        paths.extend(rings_to_polylines(&grown));
-    }
+    // Each pass offsets the copper independently, so run them in parallel; the
+    // index-ordered collect keeps passes outer→inner as before.
+    use rayon::prelude::*;
+    let paths: Vec<Polyline> = (0..params.passes.max(1))
+        .into_par_iter()
+        .flat_map_iter(|i| {
+            let dist = r + (i as f64) * step;
+            let grown = offset(geometry, dist);
+            rings_to_polylines(&grown)
+        })
+        .collect();
     let mut job = params.job.clone();
     job.units = units;
     job.tool_diameter = params.tool_diameter;

@@ -9,3 +9,4 @@ fc-gerber = { path = "../fc-gerber" }
 fc-excellon = { path = "../fc-excellon" }
 fc-gcode = { path = "../fc-gcode" }
 geo.workspace = true
+rayon.workspace = true
