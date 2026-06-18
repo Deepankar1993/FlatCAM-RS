@@ -1261,6 +1261,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fc-hpgl"
+version = "0.1.0"
+dependencies = [
+ "fc-geo",
+ "geo 0.29.3",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "fc-svg"
 version = "0.1.0"
 dependencies = [

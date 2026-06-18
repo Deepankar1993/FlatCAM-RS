@@ -50,6 +50,24 @@ pub use align::{apply_align, compute_align, AlignTransform};
 pub use distance::{geometry_distance, point_distance};
 pub use optimal::minimum_spacing;
 pub use report::{report, GeoReport};
+pub mod iso_multitool;
+pub use iso_multitool::iso_multitool;
+pub mod ncc_multitool;
+pub use ncc_multitool::ncc_multitool;
+pub mod drill_to_mill;
+pub use drill_to_mill::{hole_loop, mill_holes};
+pub mod textengrave;
+pub use textengrave::text_to_polylines;
+pub mod toolsdb;
+pub use toolsdb::{default_drill_tools, default_milling_tools, default_vbits, ToolPreset, ToolType};
+pub mod drc_extra;
+pub use drc_extra::{annular_ring_ok, hole_to_edge_ok, trace_width_ok};
+pub mod gcode_stats;
+pub use gcode_stats::{stats, JobStats};
+pub mod dogbone;
+pub use dogbone::corner_relief;
+pub mod panel_extras;
+pub use panel_extras::{mouse_bites, vscore_line};
 
 /// Parameters for isolation routing.
 #[derive(Clone, Debug)]

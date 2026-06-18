@@ -12,6 +12,7 @@
 use std::fmt::Write as _;
 
 pub mod dialects;
+pub mod dialects_extra;
 
 /// Units a job is expressed in (drives `G20`/`G21`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

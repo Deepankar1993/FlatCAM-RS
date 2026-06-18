@@ -2,6 +2,27 @@
 
 All notable changes to the Rust port are recorded here.
 
+## [0.9.0] — Big parallel batch: 12 features at once
+
+Authored by 12 agents concurrently (~82 s, ~429 K agent-tokens) against the
+frozen API; integrated with two small fixes (unreachable arm; HPGL mnemonic
+length). 10 crates total now.
+
+### Added
+- **`fc-geo::geom_utils`** — convex hull, simplify, centroid, point-in-polygon.
+- **`fc-cam`**: `iso_multitool` (multi-Ø rest isolation), `ncc_multitool`,
+  `drill_to_mill` (helical milling of oversized holes), `textengrave`
+  (single-stroke vector font A–Z/0–9), `toolsdb` (tool presets), `drc_extra`
+  (annular ring / trace width / hole-to-edge), `gcode_stats` (travel + time
+  estimate), `dogbone` (corner relief), `panel_extras` (mouse-bites, v-score).
+- **`fc-gcode::dialects_extra`** — Isel, Repetier, Berta, LinuxCNC, Mach3,
+  Toolchange-Probe preprocessors, chained into `dialects::by_name`.
+- **`fc-hpgl`** (new crate) — HPGL/2 plotter parser (IN/SP/PU/PD/PA/PR,
+  absolute + relative).
+
+### Verified
+- `cargo test --workspace`: 187 passed, 0 warnings.
+
 ## [0.8.1] — GUI: NCC / Cutout / Drilling operations
 
 ### Added

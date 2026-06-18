@@ -185,7 +185,8 @@ pub fn by_name(name: &str) -> Option<Box<dyn Preprocessor>> {
         "grbl_no_m6" => Some(Box::new(GrblNoM6)),
         "grbl_laser" | "laser" => Some(Box::new(GrblLaser)),
         "roland" | "roland_mdx" => Some(Box::new(RolandMDX)),
-        _ => None,
+        // Fall back to the extended dialect registry (Isel/Repetier/Berta/…).
+        other => crate::dialects_extra::by_name_extra(other),
     }
 }
 
