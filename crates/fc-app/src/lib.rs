@@ -51,7 +51,27 @@ pub struct ProjectObject {
     /// Free-form per-object options (the `obj_options` / `LoudDict` analogue).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub options: BTreeMap<String, String>,
+    /// Whether the object is shown on the canvas.
+    #[serde(default = "default_true")]
+    pub visible: bool,
+    /// Name of the object this one was derived from (e.g. a CNCJob's source).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
 }
+
+fn default_true() -> bool {
+    true
+}
+
+pub mod tree;
+pub use tree::TreeRow;
+pub mod naming;
+pub mod relations;
+pub mod properties;
+pub use properties::properties;
+pub mod ordering;
+pub mod icons;
+pub use icons::{kind_color, kind_icon, kind_label, kind_sort_index};
 
 impl ProjectObject {
     pub fn new(name: impl Into<String>, kind: ObjectKind) -> Self {
@@ -60,6 +80,8 @@ impl ProjectObject {
             kind,
             source_path: None,
             options: BTreeMap::new(),
+            visible: true,
+            parent: None,
         }
     }
 
@@ -81,6 +103,9 @@ pub struct Project {
     /// Working units: "mm" or "in".
     pub units: String,
     pub objects: Vec<ProjectObject>,
+    /// Name of the currently selected/active object, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected: Option<String>,
 }
 
 impl Default for Project {
@@ -89,6 +114,7 @@ impl Default for Project {
             version: PROJECT_VERSION,
             units: "mm".into(),
             objects: Vec::new(),
+            selected: None,
         }
     }
 }
@@ -99,6 +125,7 @@ impl Project {
             version: PROJECT_VERSION,
             units: units.into(),
             objects: Vec::new(),
+            selected: None,
         }
     }
 

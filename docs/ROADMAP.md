@@ -109,7 +109,9 @@ Toolkit comparison (kept for reference):
 Sub-work:
 - ✅ 2D canvas scaffold (pan/zoom, ring rendering, tool-path overlay) — `fc-gui`.
 - ⬜ Filled/triangulated copper rendering + GPU batching for large boards.
-- ⬜ Object tree / notebook / preferences UI; save G-code from the GUI.
+- 🔶 Object tree — DONE: project tree (visibility/select/rename/dup/reorder/
+  cascade-delete) + properties panel; CAM ops produce CNCJob objects in the tree.
+  Remaining: notebook tabs, full preferences UI.
 - 🔶 Interactive editors: GUI-free cores done (`fc-editor`: geo/gerber/excellon/
   gcode, 41 tests) + egui integration in `fc-gui` (add/select/delete, bake to
   CAM region). Remaining: vertex-drag, more primitives, G-code editor window.

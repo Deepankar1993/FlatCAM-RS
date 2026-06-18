@@ -2,6 +2,24 @@
 
 All notable changes to the Rust port are recorded here.
 
+## [0.13.0] — Phase 7: project tree
+
+### Added
+- **`fc-app` tree logic** (6 modules, agent-authored in parallel via separate
+  `impl Project` files): `tree` (grouped/selectable rows), `naming` (unique
+  names + rename with child re-parenting), `relations` (children/descendants +
+  cascade delete), `properties` (inspector rows), `ordering` (visibility,
+  move up/down, duplicate), `icons` (kind label/icon/color/sort). +38 tests.
+  Added `visible`/`parent` to ProjectObject and `selected` to Project.
+- **GUI: object-centric project tree** — the app now holds an `fc_app::Project`
+  + a runtime geometry store. Loaded files and CAM results are objects in a
+  left-hand tree with visibility checkboxes, selection, rename, duplicate,
+  reorder, and cascade delete; a right-hand properties panel; CAM ops act on the
+  selected object and append CNCJob objects (parented to their source).
+
+### Verified
+- `cargo test --workspace`: 319 passed, 0 warnings; `cargo build -p fc-gui` ok.
+
 ## [0.12.0] — Phase 7: interactive editors
 
 ### Added

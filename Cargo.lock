@@ -1322,7 +1322,9 @@ name = "fc-gui"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "fc-app",
  "fc-cam",
+ "fc-dxf",
  "fc-editor",
  "fc-excellon",
  "fc-gcode",
