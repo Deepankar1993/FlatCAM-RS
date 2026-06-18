@@ -24,6 +24,8 @@ pub mod geom_utils;
 pub use geom_utils::{centroid, contains_point, convex_hull, simplify};
 pub mod hatch;
 pub use hatch::hatch_lines;
+pub mod shapes;
+pub use shapes::{ring, rounded_rect, slot, star};
 use std::f64::consts::PI;
 
 /// Default number of segments used to approximate a full circle. FlatCAM's

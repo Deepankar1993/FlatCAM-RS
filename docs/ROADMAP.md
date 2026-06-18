@@ -57,7 +57,10 @@ Group B/C tools — moderate compute, no new subsystems.
 - ✅ Calculators (V-bit, units, plating) — `fc-cam::calculators`
 - ✅ Report (object statistics) — `fc-cam::report`
 - ✅ Rules check (DRC, min-clearance) — `fc-cam::rulescheck`
-- ✅ Bed levelling probe grid — `fc-cam::levelling`
+- ✅ Bed levelling probe grid + height-map apply — `fc-cam::levelling` / `levelmap`
+- ✅ Travel optimization (nearest-neighbor + 2-opt) — `fc-cam::tsp`
+- ✅ Geometry arrays + extra shapes — `fc-cam::array`, `fc-geo::shapes`
+- ✅ G-code reader (text → job) — `fc-gcode::parse_gcode`
 - ✅ Solder-paste dispense paths — `fc-cam::solderpaste`
 - ⬜ QR code — needs a `qrcode` dependency (deferred)
 

@@ -11,11 +11,13 @@ use fc_gcode::{Polyline, Units};
 use fc_geo::MultiPolygon;
 use std::collections::BTreeMap;
 
+mod analyze_cmds;
 mod cam;
 mod gen;
 mod geo_ops;
 mod io;
 mod query;
+mod transform_cmds;
 
 #[derive(thiserror::Error, Debug)]
 pub enum ScriptError {
@@ -116,6 +118,8 @@ impl Registry {
             geo_ops::commands(),
             query::commands(),
             gen::commands(),
+            transform_cmds::commands(),
+            analyze_cmds::commands(),
         ] {
             for (name, f) in group {
                 map.insert(name, f);

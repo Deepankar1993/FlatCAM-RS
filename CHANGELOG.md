@@ -2,6 +2,24 @@
 
 All notable changes to the Rust port are recorded here.
 
+## [0.15.0] — engine + scripting expansion (7-module batch)
+
+7 modules authored by agents in parallel, integrated green.
+
+### Added
+- **`fc-gcode::parse_gcode`** — read G-code text back into a `CncJob` (modal
+  G0/G1, Z-cut detection, units). Round-trips with the emitter.
+- **`fc-geo::shapes`** — `rounded_rect`, `slot`, `star`, `ring` constructors.
+- **`fc-cam::array`** — `linear_array` / `circular_array` of geometry.
+- **`fc-cam::tsp`** — `nearest_neighbor` + `two_opt` travel optimization.
+- **`fc-cam::levelmap`** — `HeightMap` (IDW) + `apply_paths` for bed-leveling
+  Z compensation of tool-paths.
+- **`fc-script`**: `transform` commands (rotate/mirror_y/array/panelize) and
+  `analyze` commands (drc/min_spacing/report) — 24 script commands total now.
+
+### Verified
+- `cargo test --workspace`: 401 passed, 0 warnings.
+
 ## [0.14.0] — scripting engine + GUI project save/load
 
 ### Added

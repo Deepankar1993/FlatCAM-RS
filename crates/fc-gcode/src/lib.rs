@@ -14,6 +14,8 @@ use std::fmt::Write as _;
 pub mod dialects;
 pub mod dialects_extra;
 pub mod dialects_more;
+pub mod reader;
+pub use reader::parse_gcode;
 
 /// Units a job is expressed in (drives `G20`/`G21`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
