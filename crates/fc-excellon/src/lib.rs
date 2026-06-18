@@ -41,7 +41,7 @@ pub struct Tool {
 }
 
 /// Parsed Excellon file.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Excellon {
     pub units: Units,
     pub tools: BTreeMap<i32, Tool>,

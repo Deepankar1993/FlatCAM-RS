@@ -47,6 +47,22 @@ pub fn draw_tool_icon(name: &str, painter: &egui::Painter, rect: egui::Rect, col
         "gcode" => document(painter, r, stroke),
         "savegcode" => save_gcode(painter, r, stroke),
         "settings" => gear(painter, r, stroke),
+        "gerber" => gerber_chip(painter, r, stroke),
+        "excellon" => excellon_sheet(painter, r, color, stroke),
+        "editor" => editor_pencil(painter, r, color, stroke),
+        "copy" => copy_glyph(painter, r, stroke),
+        "delete" => trash_can(painter, r, stroke),
+        "distance" => distance_measure(painter, r, stroke),
+        "setorigin" => set_origin(painter, r, color, stroke),
+        "milling" => milling_cutter(painter, r, stroke),
+        "follow" => follow_path(painter, r, color, stroke),
+        "panel" => panel_grid(painter, r, stroke),
+        "film" => film_strip(painter, r, stroke),
+        "twosided" => two_sided(painter, r, stroke),
+        "align" => align_shapes(painter, r, stroke),
+        "markers" => map_pin(painter, r, color, stroke),
+        "calculators" => calculator(painter, r, stroke),
+        "mirror" => mirror_glyph(painter, r, stroke),
         _ => fallback(painter, r, stroke),
     }
 }
@@ -263,6 +279,362 @@ fn gear(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
         let p1 = egui::pos2(c.x + co * outer, c.y + s * outer);
         painter.line_segment([p0, p1], stroke);
     }
+}
+
+/// Gerber: a board/IC chip — a body rect with short pin stubs on two sides.
+fn gerber_chip(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
+    let body = inset(r, 0.62);
+    rect_outline(painter, body, stroke);
+    let pins = 3;
+    let stub = r.width() * 0.12;
+    for i in 0..pins {
+        let t = (i as f32 + 1.0) / (pins as f32 + 1.0);
+        let y = body.top() + body.height() * t;
+        // Left pins.
+        painter.line_segment(
+            [egui::pos2(body.left(), y), egui::pos2(body.left() - stub, y)],
+            stroke,
+        );
+        // Right pins.
+        painter.line_segment(
+            [egui::pos2(body.right(), y), egui::pos2(body.right() + stub, y)],
+            stroke,
+        );
+    }
+}
+
+/// Excellon: a sheet rect with three small filled circles (drill points).
+fn excellon_sheet(
+    painter: &egui::Painter,
+    r: egui::Rect,
+    color: egui::Color32,
+    stroke: egui::Stroke,
+) {
+    rect_outline(painter, r, stroke);
+    let dot = STROKE_W * 1.4;
+    let pts = [
+        egui::pos2(r.left() + r.width() * 0.3, r.top() + r.height() * 0.32),
+        egui::pos2(r.left() + r.width() * 0.68, r.top() + r.height() * 0.45),
+        egui::pos2(r.left() + r.width() * 0.4, r.top() + r.height() * 0.7),
+    ];
+    for p in pts {
+        painter.circle_filled(p, dot, color);
+    }
+}
+
+/// Editor: a diagonal pencil with a small node dot.
+fn editor_pencil(
+    painter: &egui::Painter,
+    r: egui::Rect,
+    color: egui::Color32,
+    stroke: egui::Stroke,
+) {
+    // Pencil body as a thin diagonal quad from bottom-left to top-right.
+    let tip = egui::pos2(r.left() + r.width() * 0.18, r.bottom() - r.height() * 0.18);
+    let top = egui::pos2(r.right() - r.width() * 0.18, r.top() + r.height() * 0.18);
+    let w = r.width() * 0.12;
+    let body = vec![
+        egui::pos2(tip.x - w, tip.y - w),
+        egui::pos2(top.x - w, top.y - w),
+        egui::pos2(top.x + w, top.y + w),
+        egui::pos2(tip.x + w, tip.y + w),
+    ];
+    painter.add(egui::Shape::closed_line(body, stroke));
+    // Pencil point.
+    painter.line_segment([tip, egui::pos2(tip.x - w, tip.y - w)], stroke);
+    painter.line_segment([tip, egui::pos2(tip.x + w, tip.y + w)], stroke);
+    // Node dot the pencil works on.
+    painter.circle_filled(
+        egui::pos2(r.left() + r.width() * 0.18, r.bottom() - r.height() * 0.18),
+        STROKE_W * 1.3,
+        color,
+    );
+}
+
+/// Copy: two overlapping rectangles (classic copy glyph).
+fn copy_glyph(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
+    let off = r.width() * 0.2;
+    let sz = r.width() * 0.55;
+    let back = egui::Rect::from_min_max(
+        egui::pos2(r.left(), r.top()),
+        egui::pos2(r.left() + sz, r.top() + sz),
+    );
+    let front = egui::Rect::from_min_max(
+        egui::pos2(r.left() + off, r.top() + off),
+        egui::pos2(r.left() + off + sz, r.top() + off + sz),
+    );
+    rect_outline(painter, back, stroke);
+    rect_outline(painter, front, stroke);
+}
+
+/// Delete: a trash can (lid line, body, two vertical ribs).
+fn trash_can(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
+    let lid_y = r.top() + r.height() * 0.22;
+    // Lid line.
+    painter.line_segment(
+        [egui::pos2(r.left(), lid_y), egui::pos2(r.right(), lid_y)],
+        stroke,
+    );
+    // Handle on top of the lid.
+    let hw = r.width() * 0.16;
+    let cx = r.center().x;
+    painter.line_segment(
+        [egui::pos2(cx - hw, lid_y), egui::pos2(cx - hw, r.top())],
+        stroke,
+    );
+    painter.line_segment(
+        [egui::pos2(cx + hw, lid_y), egui::pos2(cx + hw, r.top())],
+        stroke,
+    );
+    painter.line_segment(
+        [egui::pos2(cx - hw, r.top()), egui::pos2(cx + hw, r.top())],
+        stroke,
+    );
+    // Body (open-topped box).
+    let bx0 = r.left() + r.width() * 0.16;
+    let bx1 = r.right() - r.width() * 0.16;
+    let body = vec![
+        egui::pos2(bx0, lid_y),
+        egui::pos2(bx0 + r.width() * 0.05, r.bottom()),
+        egui::pos2(bx1 - r.width() * 0.05, r.bottom()),
+        egui::pos2(bx1, lid_y),
+    ];
+    painter.add(egui::Shape::line(body, stroke));
+    // Two vertical ribs.
+    for t in [0.4_f32, 0.6] {
+        let x = bx0 + (bx1 - bx0) * t;
+        painter.line_segment(
+            [
+                egui::pos2(x, lid_y + r.height() * 0.12),
+                egui::pos2(x, r.bottom() - r.height() * 0.08),
+            ],
+            stroke,
+        );
+    }
+}
+
+/// Distance: a horizontal measure line with end ticks and an arrowhead each end.
+fn distance_measure(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
+    let y = r.center().y;
+    let lx = r.left();
+    let rx = r.right();
+    // Main line.
+    painter.line_segment([egui::pos2(lx, y), egui::pos2(rx, y)], stroke);
+    // End ticks (vertical).
+    let tick = r.height() * 0.22;
+    painter.line_segment([egui::pos2(lx, y - tick), egui::pos2(lx, y + tick)], stroke);
+    painter.line_segment([egui::pos2(rx, y - tick), egui::pos2(rx, y + tick)], stroke);
+    // Arrowheads pointing outward.
+    let a = r.width() * 0.14;
+    painter.line_segment([egui::pos2(lx, y), egui::pos2(lx + a, y - a * 0.7)], stroke);
+    painter.line_segment([egui::pos2(lx, y), egui::pos2(lx + a, y + a * 0.7)], stroke);
+    painter.line_segment([egui::pos2(rx, y), egui::pos2(rx - a, y - a * 0.7)], stroke);
+    painter.line_segment([egui::pos2(rx, y), egui::pos2(rx - a, y + a * 0.7)], stroke);
+}
+
+/// Set-origin: a corner dot with right + up axes (with arrow ticks).
+fn set_origin(painter: &egui::Painter, r: egui::Rect, color: egui::Color32, stroke: egui::Stroke) {
+    let o = egui::pos2(r.left() + r.width() * 0.18, r.bottom() - r.height() * 0.18);
+    let rx = egui::pos2(r.right(), o.y);
+    let uy = egui::pos2(o.x, r.top());
+    painter.line_segment([o, rx], stroke);
+    painter.line_segment([o, uy], stroke);
+    // Arrowhead on X axis.
+    let a = r.width() * 0.12;
+    painter.line_segment([rx, egui::pos2(rx.x - a, rx.y - a * 0.7)], stroke);
+    painter.line_segment([rx, egui::pos2(rx.x - a, rx.y + a * 0.7)], stroke);
+    // Arrowhead on Y axis.
+    painter.line_segment([uy, egui::pos2(uy.x - a * 0.7, uy.y + a)], stroke);
+    painter.line_segment([uy, egui::pos2(uy.x + a * 0.7, uy.y + a)], stroke);
+    // Origin dot.
+    painter.circle_filled(o, STROKE_W * 1.4, color);
+}
+
+/// Milling: a vertical end-mill tool body with a small flute/tip.
+fn milling_cutter(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
+    let cx = r.center().x;
+    let bw = r.width() * 0.22;
+    let body_top = r.top();
+    let body_bot = r.center().y + r.height() * 0.1;
+    // Shank/body rectangle.
+    let body = egui::Rect::from_min_max(
+        egui::pos2(cx - bw, body_top),
+        egui::pos2(cx + bw, body_bot),
+    );
+    rect_outline(painter, body, stroke);
+    // Flute lines inside the body.
+    for t in [0.35_f32, 0.65] {
+        let x = body.left() + body.width() * t;
+        painter.line_segment(
+            [egui::pos2(x, body.top()), egui::pos2(x, body.bottom())],
+            stroke,
+        );
+    }
+    // Cutting tip (a small triangle pointing down).
+    let tip = vec![
+        egui::pos2(cx - bw, body_bot),
+        egui::pos2(cx, r.bottom()),
+        egui::pos2(cx + bw, body_bot),
+    ];
+    painter.add(egui::Shape::line(tip, stroke));
+}
+
+/// Follow: a dashed polyline path following a contour with small dots at vertices.
+fn follow_path(painter: &egui::Painter, r: egui::Rect, color: egui::Color32, stroke: egui::Stroke) {
+    let pts = [
+        egui::pos2(r.left(), r.bottom()),
+        egui::pos2(r.left() + r.width() * 0.3, r.top() + r.height() * 0.25),
+        egui::pos2(r.left() + r.width() * 0.6, r.top() + r.height() * 0.55),
+        egui::pos2(r.right(), r.top()),
+    ];
+    // Dashed segments: split each segment into two with a gap.
+    for w in pts.windows(2) {
+        let a = w[0];
+        let b = w[1];
+        let m1 = egui::pos2(a.x + (b.x - a.x) * 0.35, a.y + (b.y - a.y) * 0.35);
+        let m2 = egui::pos2(a.x + (b.x - a.x) * 0.65, a.y + (b.y - a.y) * 0.65);
+        painter.line_segment([a, m1], stroke);
+        painter.line_segment([m2, b], stroke);
+    }
+    for p in pts {
+        painter.circle_filled(p, STROKE_W, color);
+    }
+}
+
+/// Panel: a 2x2 grid of small squares (panelize array).
+fn panel_grid(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
+    let gap = r.width() * 0.12;
+    let sz = (r.width() - gap) * 0.5;
+    for col in 0..2 {
+        for row in 0..2 {
+            let x = r.left() + col as f32 * (sz + gap);
+            let y = r.top() + row as f32 * (sz + gap);
+            let cell =
+                egui::Rect::from_min_max(egui::pos2(x, y), egui::pos2(x + sz, y + sz));
+            rect_outline(painter, cell, stroke);
+        }
+    }
+}
+
+/// Film: a film strip — a rect with sprocket-hole squares along top & bottom.
+fn film_strip(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
+    rect_outline(painter, r, stroke);
+    let holes = 4;
+    let hw = r.width() * 0.12;
+    let hh = r.height() * 0.1;
+    let pad = r.width() * 0.06;
+    let usable = r.width() - 2.0 * pad - hw;
+    for i in 0..holes {
+        let x = r.left() + pad + usable * (i as f32 / (holes as f32 - 1.0));
+        // Top hole.
+        let top = egui::Rect::from_min_max(
+            egui::pos2(x, r.top() + hh * 0.4),
+            egui::pos2(x + hw, r.top() + hh * 1.4),
+        );
+        // Bottom hole.
+        let bot = egui::Rect::from_min_max(
+            egui::pos2(x, r.bottom() - hh * 1.4),
+            egui::pos2(x + hw, r.bottom() - hh * 0.4),
+        );
+        rect_outline(painter, top, stroke);
+        rect_outline(painter, bot, stroke);
+    }
+}
+
+/// Two-sided: two stacked rectangles slightly offset (top/bottom layers).
+fn two_sided(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
+    let off = r.width() * 0.18;
+    let sz = r.width() * 0.6;
+    let top = egui::Rect::from_min_max(
+        egui::pos2(r.left(), r.top()),
+        egui::pos2(r.left() + sz, r.top() + sz * 0.7),
+    );
+    let bot = egui::Rect::from_min_max(
+        egui::pos2(r.left() + off, r.top() + off),
+        egui::pos2(r.left() + off + sz, r.top() + off + sz * 0.7),
+    );
+    rect_outline(painter, bot, stroke);
+    rect_outline(painter, top, stroke);
+}
+
+/// Align: two small shapes with a centre alignment cross between them.
+fn align_shapes(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
+    let sz = r.width() * 0.26;
+    let left = egui::Rect::from_min_max(
+        egui::pos2(r.left(), r.center().y - sz * 0.5),
+        egui::pos2(r.left() + sz, r.center().y + sz * 0.5),
+    );
+    let right = egui::Rect::from_min_max(
+        egui::pos2(r.right() - sz, r.center().y - sz * 0.5),
+        egui::pos2(r.right(), r.center().y + sz * 0.5),
+    );
+    rect_outline(painter, left, stroke);
+    rect_outline(painter, right, stroke);
+    // Centre alignment cross.
+    let c = r.center();
+    let cr = r.width() * 0.12;
+    painter.line_segment([egui::pos2(c.x - cr, c.y), egui::pos2(c.x + cr, c.y)], stroke);
+    painter.line_segment([egui::pos2(c.x, c.y - cr), egui::pos2(c.x, c.y + cr)], stroke);
+}
+
+/// Markers: a map-pin / fiducial — a circle with a centre dot and a small stem.
+fn map_pin(painter: &egui::Painter, r: egui::Rect, color: egui::Color32, stroke: egui::Stroke) {
+    let c = egui::pos2(r.center().x, r.top() + r.height() * 0.38);
+    let rad = r.width() * 0.3;
+    painter.circle_stroke(c, rad, stroke);
+    painter.circle_filled(c, STROKE_W * 1.3, color);
+    // Stem down to a point.
+    painter.line_segment(
+        [egui::pos2(c.x, c.y + rad), egui::pos2(c.x, r.bottom())],
+        stroke,
+    );
+}
+
+/// Calculators: a rect with a small screen line and a 2x2 grid of buttons.
+fn calculator(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
+    rect_outline(painter, r, stroke);
+    // Screen line near the top.
+    let sy = r.top() + r.height() * 0.28;
+    let pad = r.width() * 0.18;
+    let screen = egui::Rect::from_min_max(
+        egui::pos2(r.left() + pad, r.top() + r.height() * 0.14),
+        egui::pos2(r.right() - pad, sy),
+    );
+    rect_outline(painter, screen, stroke);
+    // 2x2 grid of button dots.
+    for col in 0..2 {
+        for row in 0..2 {
+            let x = r.left() + r.width() * (0.35 + col as f32 * 0.3);
+            let y = sy + r.height() * (0.22 + row as f32 * 0.28);
+            painter.circle_filled(egui::pos2(x, y), STROKE_W, stroke.color);
+        }
+    }
+}
+
+/// Mirror: a shape and its reflection across a vertical dashed line.
+fn mirror_glyph(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
+    let cx = r.center().x;
+    // Vertical dashed mirror line.
+    let dashes = 4;
+    let seg = r.height() / (dashes as f32 * 2.0 - 1.0);
+    for i in 0..dashes {
+        let y0 = r.top() + i as f32 * 2.0 * seg;
+        painter.line_segment([egui::pos2(cx, y0), egui::pos2(cx, y0 + seg)], stroke);
+    }
+    // Left triangle pointing toward the line.
+    let lpts = vec![
+        egui::pos2(r.left(), r.top() + r.height() * 0.2),
+        egui::pos2(cx - r.width() * 0.08, r.center().y),
+        egui::pos2(r.left(), r.bottom() - r.height() * 0.2),
+    ];
+    painter.add(egui::Shape::line(lpts, stroke));
+    // Right (mirrored) triangle.
+    let rpts = vec![
+        egui::pos2(r.right(), r.top() + r.height() * 0.2),
+        egui::pos2(cx + r.width() * 0.08, r.center().y),
+        egui::pos2(r.right(), r.bottom() - r.height() * 0.2),
+    ];
+    painter.add(egui::Shape::line(rpts, stroke));
 }
 
 /// Neutral fallback for unknown names: a (square) box outline.

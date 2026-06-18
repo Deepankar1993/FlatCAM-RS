@@ -18,7 +18,9 @@ use fc_geo::MultiPolygon;
 use std::collections::HashMap;
 
 mod icons;
+mod theme;
 mod viewport;
+use theme::{Palette, Theme};
 use viewport::format_tick;
 
 fn main() -> eframe::Result<()> {
@@ -37,6 +39,7 @@ fn main() -> eframe::Result<()> {
             app.laser_dynamic = true;
             app.sim_feed = 800.0;
             app.sim_power = 1.0;
+            app.units_label = "mm".into();
             if let Some(path) = initial {
                 app.load_path(&path);
             }
@@ -111,54 +114,6 @@ impl Camera {
     /// world-coordinate readout is valid before any file is opened.
     fn default_view(&mut self, rect: egui::Rect) {
         self.fit((-12.0, -3.0, 33.0, 20.0), rect);
-    }
-}
-
-// ----- theme / palette -----
-
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
-enum Theme {
-    #[default]
-    Light,
-    Dark,
-}
-
-/// Colours for the plot canvas (grid, axes, rulers, cursor) per theme.
-struct Palette {
-    plot_bg: egui::Color32,
-    grid_minor: egui::Color32,
-    grid_major: egui::Color32,
-    axis: egui::Color32,
-    ruler_text: egui::Color32,
-    cursor: egui::Color32,
-}
-
-impl Theme {
-    fn palette(self) -> Palette {
-        match self {
-            Theme::Light => Palette {
-                plot_bg: egui::Color32::from_gray(252),
-                grid_minor: egui::Color32::from_gray(228),
-                grid_major: egui::Color32::from_gray(198),
-                axis: egui::Color32::from_rgb(224, 122, 122),
-                ruler_text: egui::Color32::from_gray(96),
-                cursor: egui::Color32::from_rgb(214, 40, 40),
-            },
-            Theme::Dark => Palette {
-                plot_bg: egui::Color32::from_gray(16),
-                grid_minor: egui::Color32::from_gray(38),
-                grid_major: egui::Color32::from_gray(64),
-                axis: egui::Color32::from_rgb(170, 72, 72),
-                ruler_text: egui::Color32::from_gray(150),
-                cursor: egui::Color32::from_rgb(255, 80, 80),
-            },
-        }
-    }
-    fn visuals(self) -> egui::Visuals {
-        match self {
-            Theme::Light => egui::Visuals::light(),
-            Theme::Dark => egui::Visuals::dark(),
-        }
     }
 }
 
@@ -238,6 +193,10 @@ struct FlatCamApp {
     theme: Theme,
     /// Theme last pushed to egui, so we only call `set_visuals` on a change.
     applied_theme: Option<Theme>,
+    /// Status-bar grid-snap toggle (display state; snapping not yet enforced).
+    grid_snap: bool,
+    /// Status-bar units selector label ("mm" / "inch").
+    units_label: String,
     // --- laser ---
     beam: fc_laser::BeamShape,
     /// Z-dependent astigmatic beam model; used when `use_astig` is set.
@@ -565,6 +524,53 @@ impl FlatCamApp {
         self.store.insert(sel.clone(), make_stored(kind, units, StoredGeom::Region(new_mp)));
         self.camera.initialized = false;
         self.status = format!("{op} applied to {sel}");
+    }
+
+    /// Duplicate the selected object (and its stored geometry) — toolbar Copy.
+    fn copy_selected(&mut self) {
+        let Some(sel) = self.project.selected.clone() else {
+            self.status = "Select an object to copy".into();
+            return;
+        };
+        if let Some(n) = self.project.duplicate(&sel) {
+            if let Some(s) = self.store.get(&sel) {
+                let clone = StoredObj {
+                    kind: s.kind,
+                    units: s.units,
+                    geom: clone_geom(&s.geom),
+                    fill: s.fill.clone(),
+                    gcode: s.gcode.clone(),
+                };
+                self.store.insert(n, clone);
+            }
+            self.status = format!("Copied {sel}");
+        }
+    }
+
+    /// Delete the selected object and its descendants — toolbar Delete.
+    fn delete_selected(&mut self) {
+        let Some(sel) = self.project.selected.clone() else {
+            self.status = "Select an object to delete".into();
+            return;
+        };
+        for removed in self.project.descendants(&sel) {
+            self.store.remove(&removed);
+        }
+        self.project.remove_cascade(&sel);
+        self.store.remove(&sel);
+        self.camera.initialized = false;
+        self.status = format!("Deleted {sel}");
+    }
+
+    /// Open a file picker, optionally filtered, and load the chosen file.
+    fn open_file_dialog(&mut self, filter_name: &str, exts: &[&str]) {
+        let mut dlg = rfd::FileDialog::new();
+        if !exts.is_empty() {
+            dlg = dlg.add_filter(filter_name, exts);
+        }
+        if let Some(path) = dlg.pick_file() {
+            self.load_path(&path.to_string_lossy());
+        }
     }
 
     /// The flat working beam: the astigmatic model evaluated at `focus_z` when
@@ -1002,8 +1008,9 @@ impl FlatCamApp {
         b
     }
 
-    /// Draw the measurement grid, the red X/Y origin axes, and numeric ruler
-    /// labels along the bottom (X) and left (Y) edges — the CAD canvas backdrop.
+    /// Draw the measurement grid, the red X/Y origin axes, an origin crosshair,
+    /// and numeric ruler labels in left/bottom margin gutters (stock-FlatCAM
+    /// style) — the CAD canvas backdrop.
     fn draw_grid(&self, painter: &egui::Painter, rect: egui::Rect, pal: &Palette) {
         let scale = self.camera.scale.max(1e-6) as f64;
         let tl = self.camera.to_world(rect.left_top(), rect);
@@ -1016,8 +1023,8 @@ impl FlatCamApp {
 
         // Grid lines for a given step; `viewport::ticks` caps the count so an
         // extreme zoom-out can never schedule a runaway number of draws.
-        let grid = |step: f64, color: egui::Color32| {
-            let stroke = egui::Stroke::new(1.0, color);
+        let grid = |step: f64, color: egui::Color32, width: f32| {
+            let stroke = egui::Stroke::new(width, color);
             for x in viewport::ticks(min_x, max_x, step, 600) {
                 let sx = self.camera.to_screen((x, 0.0), rect).x;
                 painter.line_segment([egui::pos2(sx, rect.top()), egui::pos2(sx, rect.bottom())], stroke);
@@ -1027,8 +1034,8 @@ impl FlatCamApp {
                 painter.line_segment([egui::pos2(rect.left(), sy), egui::pos2(rect.right(), sy)], stroke);
             }
         };
-        grid(minor, pal.grid_minor);
-        grid(major, pal.grid_major);
+        grid(minor, pal.grid_minor, 1.0);
+        grid(major, pal.grid_major, 1.0);
 
         // Red origin axes (drawn only when 0 is within view).
         let o = self.camera.to_screen((0.0, 0.0), rect);
@@ -1041,29 +1048,51 @@ impl FlatCamApp {
         if y_on {
             painter.line_segment([egui::pos2(rect.left(), o.y), egui::pos2(rect.right(), o.y)], axis);
         }
+        // Bolder origin crosshair where the axes meet.
+        if x_on && y_on {
+            let cs = egui::Stroke::new(1.6, pal.axis);
+            painter.line_segment([egui::pos2(o.x - 7.0, o.y), egui::pos2(o.x + 7.0, o.y)], cs);
+            painter.line_segment([egui::pos2(o.x, o.y - 7.0), egui::pos2(o.x, o.y + 7.0)], cs);
+        }
 
-        // Ruler labels at the major step, placed ALONG the axes when on-screen
-        // (so the numbers sit on the red lines like stock FlatCAM), else pinned
-        // to the canvas edge.
+        // Ruler gutters: opaque strips along the left (Y) and bottom (X) edges,
+        // with the major-step numbers centred on each grid line — like stock.
+        let gut_l = 40.0_f32;
+        let gut_b = 18.0_f32;
+        painter.rect_filled(
+            egui::Rect::from_min_max(rect.left_top(), egui::pos2(rect.left() + gut_l, rect.bottom())),
+            egui::Rounding::ZERO,
+            pal.margin_bg,
+        );
+        painter.rect_filled(
+            egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - gut_b), rect.right_bottom()),
+            egui::Rounding::ZERO,
+            pal.margin_bg,
+        );
         let font = egui::FontId::proportional(10.0);
-        let y_baseline = if y_on { o.y - 1.0 } else { rect.bottom() - 1.0 };
+        let by = rect.bottom() - gut_b / 2.0;
         for x in viewport::ticks(min_x, max_x, major, 200) {
             let sx = self.camera.to_screen((x, 0.0), rect).x;
-            painter.text(egui::pos2(sx + 2.0, y_baseline), egui::Align2::LEFT_BOTTOM, format_tick(x), font.clone(), pal.ruler_text);
+            // +14 so a centred 3-digit label never straddles the left gutter edge.
+            if sx > rect.left() + gut_l + 14.0 {
+                painter.text(egui::pos2(sx, by), egui::Align2::CENTER_CENTER, format_tick(x), font.clone(), pal.ruler_text);
+            }
         }
-        let x_anchor = if x_on { o.x + 3.0 } else { rect.left() + 2.0 };
+        let lx = rect.left() + gut_l - 3.0;
         for y in viewport::ticks(min_y, max_y, major, 200) {
             let sy = self.camera.to_screen((0.0, y), rect).y;
-            painter.text(egui::pos2(x_anchor, sy - 1.0), egui::Align2::LEFT_BOTTOM, format_tick(y), font.clone(), pal.ruler_text);
+            if sy < rect.bottom() - gut_b && sy > rect.top() + 8.0 {
+                painter.text(egui::pos2(lx, sy), egui::Align2::RIGHT_CENTER, format_tick(y), font.clone(), pal.ruler_text);
+            }
         }
     }
 }
 
 impl eframe::App for FlatCamApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Apply the active theme only when it changes (avoids per-frame repaints).
+        // Apply the active theme + typography only when it changes.
         if self.applied_theme != Some(self.theme) {
-            ctx.set_visuals(self.theme.visuals());
+            self.theme.apply_style(ctx);
             self.applied_theme = Some(self.theme);
         }
 
@@ -1129,10 +1158,15 @@ impl eframe::App for FlatCamApp {
         // --- icon toolbar ---
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
+                // File group.
+                if tool_button(ui, "gerber", "Gerber").clicked() {
+                    self.open_file_dialog("Gerber", &["gbr", "ger", "gtl", "gbl", "gto", "gbo", "gts", "gbs"]);
+                }
+                if tool_button(ui, "excellon", "Excellon").clicked() {
+                    self.open_file_dialog("Excellon", &["drl", "xln", "exc", "txt"]);
+                }
                 if tool_button(ui, "open", "Open").clicked() {
-                    if let Some(path) = rfd::FileDialog::new().pick_file() {
-                        self.load_path(&path.to_string_lossy());
-                    }
+                    self.open_file_dialog("", &[]);
                 }
                 if tool_button(ui, "project", "Project").clicked() {
                     self.open_project();
@@ -1141,6 +1175,24 @@ impl eframe::App for FlatCamApp {
                     self.save_project();
                 }
                 ui.separator();
+                // Edit group.
+                if tool_button(ui, "editor", "Editor").clicked() {
+                    self.start_editor("geo");
+                }
+                if tool_button(ui, "copy", "Copy").clicked() {
+                    self.copy_selected();
+                }
+                if tool_button(ui, "delete", "Delete").clicked() {
+                    self.delete_selected();
+                }
+                if tool_button(ui, "setorigin", "Set Origin").clicked() {
+                    self.transform_selected("origin");
+                }
+                if tool_button(ui, "mirror", "Mirror").clicked() {
+                    self.transform_selected("mirror");
+                }
+                ui.separator();
+                // CAM group.
                 if tool_button(ui, "isolation", "Isolation").clicked() {
                     self.run_isolation();
                 }
@@ -1157,20 +1209,28 @@ impl eframe::App for FlatCamApp {
                     self.run_drilling();
                 }
                 ui.separator();
-                if tool_button(ui, "zoomfit", "Zoom Fit").clicked() {
-                    self.camera.initialized = false;
-                }
+                // Output / view group.
                 if tool_button(ui, "gcode", "G-code").clicked() {
                     self.show_gcode = !self.show_gcode;
                 }
                 if tool_button(ui, "savegcode", "Save G").clicked() {
                     self.save_gcode();
                 }
+                if tool_button(ui, "zoomfit", "Zoom Fit").clicked() {
+                    self.camera.initialized = false;
+                }
                 if tool_button(ui, "settings", "Settings").clicked() {
                     self.show_settings = !self.show_settings;
                 }
                 ui.separator();
                 ui.checkbox(&mut self.fill_on, "Fill");
+            });
+        });
+
+        // --- "Plot Area" tab strip (stock FlatCAM has a tabbed plot view) ---
+        egui::TopBottomPanel::top("plot_tabs").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.add(egui::Label::new(egui::RichText::new("Plot Area").strong()).sense(egui::Sense::hover()));
             });
         });
 
@@ -1291,12 +1351,28 @@ impl eframe::App for FlatCamApp {
                 };
                 ui.label(msg);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label("[mm]");
+                    // Idle/busy indicator dot.
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                    ui.painter().circle_filled(rect.center(), 4.0, egui::Color32::from_rgb(60, 180, 75));
+                    ui.label("Idle");
+                    ui.separator();
+                    // Units selector.
+                    egui::ComboBox::from_id_salt("units")
+                        .selected_text(self.units_label.clone())
+                        .width(54.0)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.units_label, "mm".to_string(), "mm");
+                            ui.selectable_value(&mut self.units_label, "inch".to_string(), "inch");
+                        });
+                    ui.separator();
+                    // Grid-snap toggle.
+                    ui.checkbox(&mut self.grid_snap, "Snap");
                     ui.separator();
                     match self.cursor_world {
                         Some((x, y)) => ui.monospace(format!("X {x:8.3}   Y {y:8.3}")),
                         None => ui.monospace("X    —       Y    —"),
                     };
+                    ui.separator();
                 });
             });
         });
@@ -1409,8 +1485,8 @@ impl eframe::App for FlatCamApp {
                 painter.line_segment([egui::pos2(p.x - 8.0, p.y), egui::pos2(p.x + 8.0, p.y)], cs);
                 painter.line_segment([egui::pos2(p.x, p.y - 8.0), egui::pos2(p.x, p.y + 8.0)], cs);
                 if let Some((wx, wy)) = self.cursor_world {
-                    let lx = (p.x + 10.0).min(rect.right() - 70.0);
-                    let ly = (p.y - 10.0).max(rect.top() + 14.0);
+                    let lx = (p.x + 10.0).max(rect.left() + 44.0).min(rect.right() - 70.0);
+                    let ly = (p.y - 10.0).max(rect.top() + 14.0).min(rect.bottom() - 22.0);
                     painter.text(
                         egui::pos2(lx, ly),
                         egui::Align2::LEFT_BOTTOM,
@@ -1626,7 +1702,7 @@ fn clone_geom(g: &StoredGeom) -> StoredGeom {
     match g {
         StoredGeom::Region(mp) => StoredGeom::Region(mp.clone()),
         StoredGeom::Cnc(p) => StoredGeom::Cnc(p.clone()),
-        StoredGeom::Excellon(_) => StoredGeom::Cnc(Vec::new()), // drill objects duplicate as empty cnc
+        StoredGeom::Excellon(e) => StoredGeom::Excellon(e.clone()),
     }
 }
 
