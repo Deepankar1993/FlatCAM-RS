@@ -266,6 +266,10 @@ pub struct FlatCamApp {
     units_label: String,
     /// World-space start of a right-drag rubber-band selection (if active).
     band_start: Option<(f64, f64)>,
+    /// Receiver for files being parsed on background threads (non-blocking load).
+    load_rx: Option<std::sync::mpsc::Receiver<(String, Option<StoredObj>, String)>>,
+    /// Count of files still being parsed in the background.
+    loading: usize,
     /// Active left-notebook tab.
     left_tab: LeftTab,
     /// The plugin currently shown in the Plugin tab (from the Plugins menu).
@@ -668,36 +672,56 @@ impl FlatCamApp {
             dlg = dlg.add_filter(filter_name, exts);
         }
         if let Some(paths) = dlg.pick_files() {
-            // Parse (and triangulate) all files in PARALLEL across CPU cores —
-            // serial parsing of several real Gerbers took minutes on the UI
-            // thread. parse_file is a pure static fn and StoredObj is Send.
-            let parsed: Vec<(String, Option<StoredObj>)> = std::thread::scope(|sc| {
-                let handles: Vec<_> = paths
-                    .iter()
-                    .map(|p| {
-                        let s = p.to_string_lossy().to_string();
-                        sc.spawn(move || {
-                            let obj = Self::parse_file(&s);
-                            (s, obj)
-                        })
-                    })
-                    .collect();
-                handles.into_iter().map(|h| h.join().unwrap()).collect()
-            });
-            let mut ok = 0;
-            for (path, obj) in parsed {
-                match obj {
-                    Some(o) => {
-                        let base = Self::base_name(&path);
-                        self.insert_stored(&base, o, Some(path));
-                        ok += 1;
-                    }
-                    None => self.status = format!("Failed to load {path}"),
+            // Parse each file on a BACKGROUND thread and stream results back via a
+            // channel, so the window never freezes during load (parse is the
+            // dominant cost; a debug build can spend seconds on a dense layer).
+            // Results are drained + inserted in `ui()` as they arrive.
+            let (tx, rx) = std::sync::mpsc::channel();
+            let n = paths.len();
+            for p in paths {
+                let path = p.to_string_lossy().to_string();
+                let tx = tx.clone();
+                std::thread::spawn(move || {
+                    let base = Self::base_name(&path);
+                    let obj = Self::parse_file(&path);
+                    let _ = tx.send((base, obj, path));
+                });
+            }
+            self.loading += n;
+            self.load_rx = Some(rx);
+            self.status = format!("Loading {n} file(s)…");
+        }
+    }
+
+    /// Drain any files that finished parsing on background threads and insert
+    /// them. Called once per frame from `ui()`; keeps the UI responsive on load.
+    fn poll_loads(&mut self, ctx: &egui::Context) {
+        if self.load_rx.is_none() {
+            return;
+        }
+        let mut ready: Vec<(String, Option<StoredObj>, String)> = Vec::new();
+        if let Some(rx) = self.load_rx.as_ref() {
+            while let Ok(m) = rx.try_recv() {
+                ready.push(m);
+            }
+        }
+        for (base, obj, path) in ready {
+            self.loading = self.loading.saturating_sub(1);
+            match obj {
+                Some(o) => {
+                    self.insert_stored(&base, o, Some(path));
                 }
+                None => self.status = format!("Failed to load {path}"),
             }
-            if ok > 0 {
-                self.status = format!("Loaded {ok} file(s)");
+        }
+        if self.loading == 0 {
+            self.load_rx = None;
+            if !self.project.objects.is_empty() {
+                self.status = "Ready".into();
             }
+        } else {
+            // Keep repainting while background parsing is in flight.
+            ctx.request_repaint();
         }
     }
 
@@ -1505,6 +1529,8 @@ impl FlatCamApp {
             self.theme.apply_style(ctx);
             self.applied_theme = Some(self.theme);
         }
+        // Insert any files that finished parsing on background threads.
+        self.poll_loads(ctx);
 
         // --- menu bar ---
         egui::TopBottomPanel::top("menubar").show(ctx, |ui| {
