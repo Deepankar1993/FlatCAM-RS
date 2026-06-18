@@ -3,6 +3,10 @@ name = "fc-gui"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+name = "fc_gui"
+path = "src/lib.rs"
+
 [[bin]]
 name = "flatcam-gui"
 path = "src/main.rs"
@@ -21,3 +25,4 @@ fc-pdf = { path = "../fc-pdf" }
 fc-laser = { path = "../fc-laser" }
 eframe = "0.29"
 rfd = "0.15"
+image = { version = "0.25", default-features = false, features = ["png"] }

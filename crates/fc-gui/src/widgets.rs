@@ -61,7 +61,8 @@ pub fn segmented(ui: &mut egui::Ui, selected: &mut usize, labels: &[&str]) -> eg
     // painter and still call `ui.rect_contains_pointer` inside the loop without
     // borrow conflicts.
     let track_color = ui.visuals().faint_bg_color;
-    let pill_color = ui.visuals().selection.bg_fill;
+    // Solid accent pill (the pale selection fill left white text unreadable).
+    let pill_color = ui.visuals().hyperlink_color;
     let active_color = ui.visuals().widgets.active.fg_stroke.color;
     let hovered_color = ui.visuals().widgets.hovered.fg_stroke.color;
     let inactive_color = ui.visuals().widgets.inactive.fg_stroke.color;
