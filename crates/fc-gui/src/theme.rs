@@ -8,6 +8,45 @@
 
 use eframe::egui;
 
+/// Install a modern UI font as the default, replacing egui's basic bundled face
+/// (the single biggest "looks like a toy" tell). Tries native Windows fonts
+/// (Segoe UI for text, Consolas for monospace), keeping egui's faces as glyph
+/// fallback. A no-op if none are found, so the app still runs anywhere.
+pub fn install_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    let mut changed = false;
+
+    // Proportional UI text.
+    for path in [r"C:\Windows\Fonts\segoeui.ttf", r"C:\Windows\Fonts\SegoeUI.ttf"] {
+        if let Ok(bytes) = std::fs::read(path) {
+            fonts.font_data.insert("ui".to_owned(), egui::FontData::from_owned(bytes));
+            fonts
+                .families
+                .entry(egui::FontFamily::Proportional)
+                .or_default()
+                .insert(0, "ui".to_owned());
+            changed = true;
+            break;
+        }
+    }
+    // Monospace (G-code, coordinates).
+    for path in [r"C:\Windows\Fonts\consola.ttf", r"C:\Windows\Fonts\Consolas.ttf"] {
+        if let Ok(bytes) = std::fs::read(path) {
+            fonts.font_data.insert("mono".to_owned(), egui::FontData::from_owned(bytes));
+            fonts
+                .families
+                .entry(egui::FontFamily::Monospace)
+                .or_default()
+                .insert(0, "mono".to_owned());
+            changed = true;
+            break;
+        }
+    }
+    if changed {
+        ctx.set_fonts(fonts);
+    }
+}
+
 /// The application colour scheme.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum Theme {
@@ -93,10 +132,13 @@ impl Theme {
             .insert(TextStyle::Small, FontId::new(10.5, FontFamily::Proportional));
 
         // Spacing: a tidy, professional feel.
-        style.spacing.item_spacing = egui::vec2(7.0, 5.0);
-        style.spacing.button_padding = egui::vec2(7.0, 4.0);
+        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+        style.spacing.button_padding = egui::vec2(8.0, 5.0);
         style.spacing.menu_margin = egui::Margin::same(6.0);
-        style.spacing.window_margin = egui::Margin::same(8.0);
+        style.spacing.window_margin = egui::Margin::same(10.0);
+        style.spacing.slider_width = 130.0;
+        style.spacing.interact_size.y = 24.0;
+        style.spacing.indent = 16.0;
 
         // Rounding: soften widget corners and windows for a modern look.
         let rounding = egui::Rounding::same(5.0);

@@ -33,7 +33,9 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "FlatCAM-RS",
         native_options,
-        Box::new(move |_cc| {
+        Box::new(move |cc| {
+            // Install a modern UI font before the first frame (one-time, ~free).
+            theme::install_fonts(&cc.egui_ctx);
             let mut app = FlatCamApp::default();
             app.fill_on = true;
             app.laser_kerf = true;
