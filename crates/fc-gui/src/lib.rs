@@ -92,6 +92,41 @@ fn layer_color(name: &str, kind: ObjectKind) -> egui::Color32 {
     }
 }
 
+/// Painter draw-order priority for a layer (smaller = drawn first / further
+/// back). Copper sits at the back, then soldermask, silkscreen, board edge, and
+/// drills/CNC paths on top — like a real PCB stack-up.
+fn layer_z(name: &str, kind: ObjectKind) -> u8 {
+    match kind {
+        ObjectKind::Excellon => 90, // drills on top
+        ObjectKind::CncJob => 80,   // toolpaths above copper
+        _ => {
+            let n = name.to_lowercase();
+            if n.contains("edge") || n.contains("outline") || n.contains("profile") {
+                85
+            } else if n.contains("silk") {
+                70
+            } else if n.contains("paste") {
+                60
+            } else if n.contains("mask") {
+                50
+            } else if n.contains("cu") || n.contains("copper") {
+                20 // copper at the back
+            } else {
+                40
+            }
+        }
+    }
+}
+
+/// A darker shade of `c` for crisp outlines on top of an opaque fill.
+fn darken(c: egui::Color32, f: f32) -> egui::Color32 {
+    egui::Color32::from_rgb(
+        (c.r() as f32 * f) as u8,
+        (c.g() as f32 * f) as u8,
+        (c.b() as f32 * f) as u8,
+    )
+}
+
 /// Build the outline rings `(points, closed)` for an object's geometry. Done
 /// once at construction and cached on [`StoredObj`] (the render loop and
 /// `all_bounds` must never recompute this per frame).
@@ -1837,21 +1872,26 @@ impl FlatCamApp {
                 }
             }
 
-            // Draw all visible objects (selected one highlighted).
+            // Draw visible objects in PCB layer order (copper at the back, then
+            // mask/silk/edge, drills + toolpaths on top); the selected object is
+            // always drawn last. Fills are OPAQUE so copper/tracks read as solid.
             let sel = self.project.selected.clone();
-            for obj in &self.project.objects {
-                if !obj.visible {
-                    continue;
-                }
+            let mut order: Vec<&ProjectObject> =
+                self.project.objects.iter().filter(|o| o.visible).collect();
+            order.sort_by_key(|o| {
+                let z = self.store.get(&o.name).map_or(50, |s| layer_z(&o.name, s.kind));
+                let selected = sel.as_deref() == Some(o.name.as_str());
+                (selected, z)
+            });
+            for obj in order {
                 let Some(s) = self.store.get(&obj.name) else { continue };
                 let color = s.color;
                 let is_sel = sel.as_deref() == Some(obj.name.as_str());
-                // Filled rendering (triangulated regions), drawn under outlines.
-                // Batch the whole layer into ONE mesh (was one Shape per triangle
-                // → thousands of shapes/frame) and use low alpha so stacked layers
-                // stay readable (no green flood).
+                // Opaque fill (one batched mesh) — solid copper/regions. Unselected
+                // layers keep a hair of transparency so an underlying layer hints
+                // through; the selected layer is fully opaque.
                 if self.fill_on && !s.fill.is_empty() {
-                    let a = if is_sel { 130 } else { 60 };
+                    let a = if is_sel { 255 } else { 210 };
                     let fill = egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), a);
                     let mut mesh = egui::Mesh::default();
                     for tri in &s.fill {
@@ -1863,9 +1903,10 @@ impl FlatCamApp {
                     }
                     painter.add(egui::Shape::mesh(mesh));
                 }
-                let stroke = egui::Stroke::new(if is_sel { 1.8 } else { 1.2 }, color);
-                // Batch each ring into ONE polyline Shape (was a Shape per edge →
-                // tens of thousands of shapes/frame for dense layers → sluggish).
+                // Crisp outline in a darker shade so tracks/pads have defined edges
+                // on top of the opaque fill (bright accent when selected).
+                let edge = if is_sel { color } else { darken(color, 0.55) };
+                let stroke = egui::Stroke::new(if is_sel { 1.8 } else { 1.0 }, edge);
                 for (ring, closed) in &s.rings {
                     if ring.len() == 1 {
                         painter.circle_stroke(self.camera.to_screen(ring[0], rect), 2.0, stroke);
