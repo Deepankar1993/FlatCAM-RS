@@ -2,6 +2,26 @@
 
 All notable changes to the Rust port are recorded here.
 
+## [0.21.0] — real-world KiCad validation + board positioning
+
+Validated end-to-end against a real KiCad board (SmartPowerMonitor): all layers
+parse (incl. X2 attributes, aperture macros, ground pour) and the drill file's
+57 holes + 3 slots; CAM toolpaths match the source geometry. The reference
+FlatCAM `.ngc` differed only by board positioning — which is now supported.
+
+### Added
+- **`fc-geo::transform::{normalize_origin, mirror_bottom}`** — move-to-origin and
+  bottom-layer mirror (matches FlatCAM's positioning of bottom copper).
+- **CLI `--mirror` / `--origin`** flags on iso/paint/ncc/cutout; with both, output
+  reproduces FlatCAM's reference coordinate space.
+
+### Fixed
+- CLI `parse_opts` now handles value-less boolean flags without swallowing the
+  next token (e.g. `--origin -o out.ngc`).
+
+### Verified
+- `cargo test --workspace`: 483 passed, 0 warnings.
+
 ## [0.20.0] — Gerber completeness: macro thermal/moiré + X2 attributes
 
 ### Added

@@ -231,6 +231,24 @@ pub mod transform {
     pub fn mirror_y(mp: &MultiPolygon<f64>, axis: f64) -> MultiPolygon<f64> {
         scale(mp, -1.0, 1.0, (axis, 0.0))
     }
+
+    /// Translate so the geometry's lower-left bounding-box corner sits at the
+    /// origin (the "move to origin" board-positioning step CAM tools apply).
+    pub fn normalize_origin(mp: &MultiPolygon<f64>) -> MultiPolygon<f64> {
+        match super::bounds(mp) {
+            Some((minx, miny, _, _)) => translate(mp, -minx, -miny),
+            None => mp.clone(),
+        }
+    }
+
+    /// Mirror the bottom side of a board (flip across the vertical centre of its
+    /// bounding box), as done when machining a bottom copper layer.
+    pub fn mirror_bottom(mp: &MultiPolygon<f64>) -> MultiPolygon<f64> {
+        match super::bounds(mp) {
+            Some((minx, _, maxx, _)) => mirror_y(mp, (minx + maxx) / 2.0),
+            None => mp.clone(),
+        }
+    }
 }
 
 #[cfg(test)]

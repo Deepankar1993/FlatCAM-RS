@@ -88,9 +88,17 @@ fn parse_opts(args: &[String]) -> HashMap<String, String> {
     let mut i = 0;
     while i < args.len() {
         if let Some(key) = args[i].strip_prefix("--") {
-            let val = args.get(i + 1).cloned().unwrap_or_default();
-            m.insert(key.to_string(), val);
-            i += 2;
+            // Known value-less boolean flags; everything else consumes a value
+            // (which may be a negative number like -0.05).
+            const BOOL_FLAGS: &[&str] = &["mirror", "origin", "no-contour", "on-line"];
+            if BOOL_FLAGS.contains(&key) {
+                m.insert(key.to_string(), String::new());
+                i += 1;
+            } else {
+                let val = args.get(i + 1).cloned().unwrap_or_default();
+                m.insert(key.to_string(), val);
+                i += 2;
+            }
         } else if args[i] == "-o" {
             m.insert("o".to_string(), args.get(i + 1).cloned().unwrap_or_default());
             i += 2;
@@ -175,7 +183,7 @@ fn cmd_info(pos: &[String]) -> Result<()> {
 
 fn cmd_iso(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
     let path = pos.first().context("iso: expected a gerber or svg path")?;
-    let (geom, units) = load_geometry(path)?;
+    let (geom, units) = load_geometry(path, opts)?;
     let params = fc_cam::IsolationParams {
         tool_diameter: getf(opts, "tool-dia", 0.1),
         passes: getf(opts, "passes", 1.0) as usize,
@@ -215,7 +223,7 @@ fn cmd_drill(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
 
 fn cmd_paint(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
     let path = pos.first().context("paint: expected a gerber or svg path")?;
-    let (geom, units) = load_geometry(path)?;
+    let (geom, units) = load_geometry(path, opts)?;
     let params = fc_cam::PaintParams {
         tool_diameter: getf(opts, "tool-dia", 0.5),
         overlap: getf(opts, "overlap", 0.2),
@@ -242,7 +250,7 @@ fn cmd_paint(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
 
 fn cmd_ncc(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
     let path = pos.first().context("ncc: expected a gerber path")?;
-    let (geom, units) = load_geometry(path)?;
+    let (geom, units) = load_geometry(path, opts)?;
     let params = fc_cam::NccParams {
         tool_diameter: getf(opts, "tool-dia", 0.5),
         overlap: getf(opts, "overlap", 0.4),
@@ -258,7 +266,7 @@ fn cmd_ncc(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
 
 fn cmd_cutout(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
     let path = pos.first().context("cutout: expected a gerber or svg path")?;
-    let (geom, units) = load_geometry(path)?;
+    let (geom, units) = load_geometry(path, opts)?;
     let params = fc_cam::CutoutParams {
         tool_diameter: getf(opts, "tool-dia", 1.0),
         tabs: getf(opts, "tabs", 4.0) as usize,
@@ -281,28 +289,37 @@ fn cmd_cutout(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
 
 /// Load a 2-D region from a Gerber or SVG file (the geometry CAM ops act on).
 /// SVG has no document units, so it is treated as millimetres.
-fn load_geometry(path: &str) -> Result<(geo::MultiPolygon<f64>, Units)> {
+fn load_geometry(
+    path: &str,
+    opts: &HashMap<String, String>,
+) -> Result<(geo::MultiPolygon<f64>, Units)> {
     let lower = path.to_lowercase();
-    if lower.ends_with(".pdf") {
+    let (mut geom, units) = if lower.ends_with(".pdf") {
         let bytes = std::fs::read(path).with_context(|| format!("reading {path}"))?;
-        let pdf = fc_pdf::parse(&bytes)?;
-        return Ok((pdf.polygons, Units::Mm));
-    }
-    let text = read(path)?;
-    if lower.ends_with(".svg") {
-        let svg = fc_svg::parse(&text)?;
-        Ok((svg.polygons, Units::Mm))
-    } else if lower.ends_with(".dxf") {
-        let dxf = fc_dxf::parse(&text)?;
-        Ok((dxf.polygons, Units::Mm))
+        (fc_pdf::parse(&bytes)?.polygons, Units::Mm)
     } else {
-        let g = fc_gerber::parse(&text)?;
-        let units = match g.units {
-            fc_gerber::Units::Mm => Units::Mm,
-            fc_gerber::Units::Inch => Units::Inch,
-        };
-        Ok((g.solid_geometry, units))
+        let text = read(path)?;
+        if lower.ends_with(".svg") {
+            (fc_svg::parse(&text)?.polygons, Units::Mm)
+        } else if lower.ends_with(".dxf") {
+            (fc_dxf::parse(&text)?.polygons, Units::Mm)
+        } else {
+            let g = fc_gerber::parse(&text)?;
+            let u = match g.units {
+                fc_gerber::Units::Mm => Units::Mm,
+                fc_gerber::Units::Inch => Units::Inch,
+            };
+            (g.solid_geometry, u)
+        }
+    };
+    // Optional board-positioning transforms (mirror a bottom layer, move to origin).
+    if opts.contains_key("mirror") {
+        geom = fc_geo::transform::mirror_bottom(&geom);
     }
+    if opts.contains_key("origin") {
+        geom = fc_geo::transform::normalize_origin(&geom);
+    }
+    Ok((geom, units))
 }
 
 fn geo_bounds(mp: &geo::MultiPolygon<f64>) -> Option<(f64, f64, f64, f64)> {
@@ -344,3 +361,4 @@ fn classify(path: &str) -> FileKind {
         _ => FileKind::Gerber,
     }
 }
+
