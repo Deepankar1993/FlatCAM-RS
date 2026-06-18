@@ -28,6 +28,7 @@ fn main() -> eframe::Result<()> {
         native_options,
         Box::new(move |_cc| {
             let mut app = FlatCamApp::default();
+            app.fill_on = true;
             if let Some(path) = initial {
                 app.load_path(&path);
             }
@@ -48,6 +49,16 @@ struct StoredObj {
     kind: ObjectKind,
     units: Units,
     geom: StoredGeom,
+    /// Cached fill triangles (region kinds only), for filled rendering.
+    fill: Vec<[(f64, f64); 3]>,
+}
+
+fn make_stored(kind: ObjectKind, units: Units, geom: StoredGeom) -> StoredObj {
+    let fill = match &geom {
+        StoredGeom::Region(mp) => fc_geo::triangulate(mp),
+        _ => Vec::new(),
+    };
+    StoredObj { kind, units, geom, fill }
 }
 
 // ----- camera -----
@@ -130,6 +141,7 @@ struct FlatCamApp {
     last_gcode: Option<String>,
     preproc: String,
     rename_buf: String,
+    fill_on: bool,
     // editor
     editor: Editor,
     edit_tool: EditTool,
@@ -168,7 +180,7 @@ impl FlatCamApp {
         obj.parent = parent;
         obj.source_path = source;
         let _ = self.project.add(obj);
-        self.store.insert(name.clone(), StoredObj { kind, units, geom });
+        self.store.insert(name.clone(), make_stored(kind, units, geom));
         self.project.selected = Some(name.clone());
         self.camera.initialized = false;
         name
@@ -176,22 +188,27 @@ impl FlatCamApp {
 
     /// Parse a file into a runtime object (kind/units/geometry), or None.
     fn parse_file(path: &str) -> Option<StoredObj> {
-        let text = std::fs::read_to_string(path).ok()?;
         let lower = path.to_lowercase();
+        if lower.ends_with(".pdf") {
+            let bytes = std::fs::read(path).ok()?;
+            let pdf = fc_pdf::parse(&bytes).ok()?;
+            return Some(make_stored(ObjectKind::Geometry, Units::Mm, StoredGeom::Region(pdf.polygons)));
+        }
+        let text = std::fs::read_to_string(path).ok()?;
         if lower.ends_with(".svg") {
             let svg = fc_svg::parse(&text).ok()?;
-            Some(StoredObj { kind: ObjectKind::Svg, units: Units::Mm, geom: StoredGeom::Region(svg.polygons) })
+            Some(make_stored(ObjectKind::Svg, Units::Mm, StoredGeom::Region(svg.polygons)))
         } else if lower.ends_with(".dxf") {
             let d = fc_dxf::parse(&text).ok()?;
-            Some(StoredObj { kind: ObjectKind::Geometry, units: Units::Mm, geom: StoredGeom::Region(d.polygons) })
+            Some(make_stored(ObjectKind::Geometry, Units::Mm, StoredGeom::Region(d.polygons)))
         } else if lower.ends_with(".drl") || lower.ends_with(".nc") || lower.ends_with(".xln") || lower.ends_with(".exc") {
             let e = fc_excellon::parse(&text).ok()?;
             let u = map_exc_units(e.units);
-            Some(StoredObj { kind: ObjectKind::Excellon, units: u, geom: StoredGeom::Excellon(e) })
+            Some(make_stored(ObjectKind::Excellon, u, StoredGeom::Excellon(e)))
         } else {
             let g = fc_gerber::parse(&text).ok()?;
             let u = map_gerber_units(g.units);
-            Some(StoredObj { kind: ObjectKind::Gerber, units: u, geom: StoredGeom::Region(g.solid_geometry) })
+            Some(make_stored(ObjectKind::Gerber, u, StoredGeom::Region(g.solid_geometry)))
         }
     }
 
@@ -616,6 +633,7 @@ impl eframe::App for FlatCamApp {
                     self.run_drilling();
                 }
                 ui.separator();
+                ui.checkbox(&mut self.fill_on, "Fill");
                 if ui.button("Save G-code…").clicked() {
                     self.save_gcode();
                 }
@@ -702,6 +720,14 @@ impl eframe::App for FlatCamApp {
                 let Some(s) = self.store.get(&obj.name) else { continue };
                 let (rings, color) = self.object_rings(s);
                 let is_sel = sel.as_deref() == Some(obj.name.as_str());
+                // Filled rendering (triangulated regions), drawn under outlines.
+                if self.fill_on && !s.fill.is_empty() {
+                    let fill = egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 70);
+                    for tri in &s.fill {
+                        let p: Vec<egui::Pos2> = tri.iter().map(|&pt| self.camera.to_screen(pt, rect)).collect();
+                        painter.add(egui::Shape::convex_polygon(p, fill, egui::Stroke::NONE));
+                    }
+                }
                 let stroke = egui::Stroke::new(if is_sel { 2.0 } else { 1.0 }, color);
                 for (ring, closed) in &rings {
                     if ring.len() == 1 {
@@ -784,7 +810,7 @@ impl FlatCamApp {
                 if ui.button("Dup").clicked() {
                     if let Some(n) = self.project.duplicate(&sel) {
                         if let Some(s) = self.store.get(&sel) {
-                            let clone = StoredObj { kind: s.kind, units: s.units, geom: clone_geom(&s.geom) };
+                            let clone = StoredObj { kind: s.kind, units: s.units, geom: clone_geom(&s.geom), fill: s.fill.clone() };
                             self.store.insert(n, clone);
                         }
                     }

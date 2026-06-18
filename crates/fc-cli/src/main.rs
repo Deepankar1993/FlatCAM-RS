@@ -282,8 +282,13 @@ fn cmd_cutout(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
 /// Load a 2-D region from a Gerber or SVG file (the geometry CAM ops act on).
 /// SVG has no document units, so it is treated as millimetres.
 fn load_geometry(path: &str) -> Result<(geo::MultiPolygon<f64>, Units)> {
-    let text = read(path)?;
     let lower = path.to_lowercase();
+    if lower.ends_with(".pdf") {
+        let bytes = std::fs::read(path).with_context(|| format!("reading {path}"))?;
+        let pdf = fc_pdf::parse(&bytes)?;
+        return Ok((pdf.polygons, Units::Mm));
+    }
+    let text = read(path)?;
     if lower.ends_with(".svg") {
         let svg = fc_svg::parse(&text)?;
         Ok((svg.polygons, Units::Mm))

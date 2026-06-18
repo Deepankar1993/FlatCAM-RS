@@ -16,6 +16,7 @@ fc-cam = { path = "../fc-cam" }
 fc-svg = { path = "../fc-svg" }
 fc-hpgl = { path = "../fc-hpgl" }
 fc-dxf = { path = "../fc-dxf" }
+fc-pdf = { path = "../fc-pdf" }
 fc-script = { path = "../fc-script" }
 geo.workspace = true
 anyhow.workspace = true
