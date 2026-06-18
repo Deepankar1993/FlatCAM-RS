@@ -124,10 +124,11 @@ struct CamParams {
     tool_dia: f64,
     passes: i32,
     overlap: f64,
+    lead: f64,
 }
 impl Default for CamParams {
     fn default() -> Self {
-        CamParams { tool_dia: 0.4, passes: 1, overlap: 0.1 }
+        CamParams { tool_dia: 0.4, passes: 1, overlap: 0.1, lead: 0.0 }
     }
 }
 
@@ -142,6 +143,8 @@ struct FlatCamApp {
     preproc: String,
     rename_buf: String,
     fill_on: bool,
+    prefs: fc_app::Preferences,
+    show_settings: bool,
     // editor
     editor: Editor,
     edit_tool: EditTool,
@@ -315,6 +318,12 @@ impl FlatCamApp {
         };
         let job = fc_cam::isolation_geo(&geom, units, &params);
         if let JobKind::Mill { paths } = job.kind {
+            let lead = self.params.lead;
+            let paths = if lead > 0.0 {
+                paths.iter().map(|p| fc_cam::add_lead(p, lead)).collect()
+            } else {
+                paths
+            };
             self.finalize_job("iso", &src, units, paths);
         }
     }
@@ -399,6 +408,15 @@ impl FlatCamApp {
                 Err(e) => self.status = format!("Save failed: {e}"),
             }
         }
+    }
+
+    /// Copy persisted preferences into the active CAM parameters.
+    fn apply_prefs(&mut self) {
+        self.params.tool_dia = self.prefs.default_tool_dia;
+        self.params.passes = self.prefs.iso_passes.max(1) as i32;
+        self.params.overlap = self.prefs.iso_overlap;
+        self.preproc = self.prefs.default_preproc.clone();
+        self.status = "Applied preferences to parameters".into();
     }
 
     // ----- editors -----
@@ -634,6 +652,9 @@ impl eframe::App for FlatCamApp {
                 }
                 ui.separator();
                 ui.checkbox(&mut self.fill_on, "Fill");
+                if ui.button("Settings").clicked() {
+                    self.show_settings = !self.show_settings;
+                }
                 if ui.button("Save G-code…").clicked() {
                     self.save_gcode();
                 }
@@ -648,6 +669,7 @@ impl eframe::App for FlatCamApp {
             ui.add(egui::Slider::new(&mut self.params.tool_dia, 0.05..=3.0).text("Tool Ø"));
             ui.add(egui::Slider::new(&mut self.params.passes, 1..=8).text("Passes"));
             ui.add(egui::Slider::new(&mut self.params.overlap, 0.0..=0.9).text("Overlap"));
+            ui.add(egui::Slider::new(&mut self.params.lead, 0.0..=5.0).text("Lead in/out"));
             if self.preproc.is_empty() {
                 self.preproc = "grbl".into();
             }
@@ -764,6 +786,40 @@ impl eframe::App for FlatCamApp {
                 }
             }
         });
+
+        // Settings window (binds the fc_app::Preferences model).
+        let mut open = self.show_settings;
+        egui::Window::new("Settings").open(&mut open).resizable(false).show(ctx, |ui| {
+            ui.horizontal(|ui| { ui.label("Units"); ui.text_edit_singleline(&mut self.prefs.units); });
+            ui.add(egui::Slider::new(&mut self.prefs.default_tool_dia, 0.05..=6.0).text("Tool Ø"));
+            ui.add(egui::Slider::new(&mut self.prefs.default_cut_z, -5.0..=0.0).text("Cut Z"));
+            ui.add(egui::Slider::new(&mut self.prefs.default_travel_z, 0.0..=10.0).text("Travel Z"));
+            ui.add(egui::Slider::new(&mut self.prefs.default_feed_xy, 10.0..=2000.0).text("Feed XY"));
+            ui.add(egui::Slider::new(&mut self.prefs.default_feed_z, 10.0..=1000.0).text("Feed Z"));
+            ui.add(egui::Slider::new(&mut self.prefs.default_spindle, 0.0..=30000.0).text("Spindle"));
+            ui.add(egui::Slider::new(&mut self.prefs.iso_passes, 1..=8).text("Iso passes"));
+            ui.add(egui::Slider::new(&mut self.prefs.iso_overlap, 0.0..=0.9).text("Iso overlap"));
+            ui.horizontal(|ui| { ui.label("Preprocessor"); ui.text_edit_singleline(&mut self.prefs.default_preproc); });
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("Apply to params").clicked() {
+                    self.apply_prefs();
+                }
+                if ui.button("Save…").clicked() {
+                    if let Some(path) = rfd::FileDialog::new().add_filter("prefs", &["json"]).set_file_name("prefs.json").save_file() {
+                        let _ = self.prefs.save(&path);
+                    }
+                }
+                if ui.button("Load…").clicked() {
+                    if let Some(path) = rfd::FileDialog::new().add_filter("prefs", &["json"]).pick_file() {
+                        if let Ok(p) = fc_app::Preferences::load(&path) {
+                            self.prefs = p;
+                        }
+                    }
+                }
+            });
+        });
+        self.show_settings = open;
     }
 }
 

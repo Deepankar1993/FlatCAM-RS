@@ -2,6 +2,20 @@
 
 All notable changes to the Rust port are recorded here.
 
+## [0.19.0] — hardening: integration tests, laser dialects, docs, GUI settings
+
+### Added
+- **Cross-crate integration tests**: `fc-cam/tests/pipeline.rs` (parse→CAM→G-code,
+  8 tests) and `fc-script/tests/scripting.rs` (script runs, 6 tests).
+- **`fc-gcode::dialects_laser2`** — GRBL laser air-assist + Marlin laser FAN/
+  spindle variants, chained into `by_name` (19 dialects reachable).
+- **Docs**: `docs/USER_GUIDE.md` and `docs/SCRIPTING.md`.
+- **GUI**: a Settings window bound to `fc_app::Preferences` (edit + Apply +
+  Save/Load JSON), and a lead-in/out slider applied to isolation toolpaths.
+
+### Verified
+- `cargo test --workspace`: 470 passed, 0 warnings.
+
 ## [0.18.0] — PDF import + triangulation + toolpath quality + preferences
 
 ### Added
