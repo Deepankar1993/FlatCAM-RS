@@ -1,6 +1,6 @@
 # FlatCAM-RS
 
-A ground-up **Rust** reimplementation of [FlatCAM Evo](../README.md) — the PCB
+A ground-up **Rust** reimplementation of [FlatCAM Evo](https://github.com/Deepankar1993/FlatCAM-Plus) — the PCB
 CAM application that turns Gerber/Excellon files into CNC G-code.
 
 The Python original (PyQt6 + Shapely) is powerful but becomes sluggish on large
@@ -8,10 +8,12 @@ boards: geometry buffering/union, interactive rendering, and G-code generation
 are CPU-bound and fighting the GIL. This port rebuilds the engine in Rust to be
 fast, memory-lean, and embeddable, while keeping the Python codebase untouched.
 
-> **Status: working CAM core (Phase 1 complete).** The geometry engine, Gerber
-> and Excellon parsers, isolation routing, drilling, and a GRBL/Marlin G-code
-> backend are implemented, unit-tested, and exposed through a headless CLI. The
-> GUI and the full plugin set are scoped in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+> **Status: full CAM engine + native desktop GUI working.** 16 crates, ~604
+> tests. Gerber/Excellon/SVG/DXF/PDF import, ~25 CAM operations, ~30 G-code
+> dialects, a headless CLI, and an `eframe`/`egui` desktop app at stock-FlatCAM
+> menu/plugin parity. **See [`PROJECT_STATUS.md`](PROJECT_STATUS.md) for the full
+> current state, architecture, and build/run instructions.** Roadmap in
+> [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Why Rust
 
