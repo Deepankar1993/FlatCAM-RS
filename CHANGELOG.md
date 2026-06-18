@@ -2,6 +2,33 @@
 
 All notable changes to the Rust port are recorded here.
 
+## [0.23.0] — diode-laser beam-shape compensation (fc-laser)
+
+A new subsystem for low-cost diode lasers whose spot is **elliptical, not
+circular** — so kerf and burn depend on travel direction. Researched and
+validated (kerf ∝ perpendicular extent; areal fluence ∝ P/(v·L⊥)); this
+direction-dependent compensation is a genuine gap in shipping CAM tools.
+
+### Added — `fc-laser` (new crate, 26 tests)
+- **`BeamShape`** (width_x/width_y/angle) with `kerf_perpendicular`,
+  `dwell_extent`, and `power_factor` = kerf_perp(θ)/max_extent (equalises fluence).
+- **`anisotropic_offset`** — elliptical (kerf) offset via the affine Minkowski
+  trick (rotate→scale→circular-offset→unscale→unrotate; rigorous & literature-
+  backed since Minkowski commutes with linear maps).
+- **`simulate`** — burn/fluence raster (`BurnMap`) for the visual plugin; a
+  horizontal segment burns hotter than vertical for an elongated beam.
+- **`optimal_fill_angle`** / `burn_uniformity` — fill-angle optimizer (min
+  burn-variance) — the visual optimization core.
+- **`compensate_power`** + **`laser_gcode`** (per-move `S`, M4 dynamic / M3).
+- **`laser_isolation`** — anisotropic kerf + per-segment power in one op.
+- **CLI `laser-iso`** (`--beam-x --beam-y --beam-angle [--no-kerf] [--no-dynamic]`).
+
+### Verified
+- On the real KiCad SmartPowerMonitor B_Cu with a 0.10×0.06 mm beam: vertical
+  moves keep full power (S1000), horizontal/curved moves drop to ~S600 (the
+  0.6 aspect ratio), 148 distinct direction-dependent S values.
+- `cargo test --workspace`: 509 passed, 0 warnings.
+
 ## [0.22.0] — desktop app: complete GUI
 
 ### Added (GUI)

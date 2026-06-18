@@ -1267,6 +1267,7 @@ dependencies = [
  "fc-geo",
  "fc-gerber",
  "fc-hpgl",
+ "fc-laser",
  "fc-pdf",
  "fc-script",
  "fc-svg",
@@ -1351,6 +1352,15 @@ dependencies = [
  "fc-geo",
  "geo 0.29.3",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "fc-laser"
+version = "0.1.0"
+dependencies = [
+ "fc-gcode",
+ "fc-geo",
+ "geo 0.29.3",
 ]
 
 [[package]]

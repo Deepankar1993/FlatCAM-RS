@@ -18,5 +18,6 @@ fc-hpgl = { path = "../fc-hpgl" }
 fc-dxf = { path = "../fc-dxf" }
 fc-pdf = { path = "../fc-pdf" }
 fc-script = { path = "../fc-script" }
+fc-laser = { path = "../fc-laser" }
 geo.workspace = true
 anyhow.workspace = true

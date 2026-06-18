@@ -1,0 +1,9 @@
+[package]
+name = "fc-laser"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+fc-geo = { path = "../fc-geo" }
+fc-gcode = { path = "../fc-gcode" }
+geo.workspace = true

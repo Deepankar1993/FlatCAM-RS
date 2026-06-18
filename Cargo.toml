@@ -16,6 +16,7 @@ members = [
     "crates/fc-script",
     "crates/fc-qr",
     "crates/fc-pdf",
+    "crates/fc-laser",
 ]
 exclude = ["_nettest", "_dxfprobe", "_qrprobe", "_pdfprobe"]
 

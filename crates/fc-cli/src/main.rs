@@ -55,6 +55,7 @@ fn run() -> Result<()> {
         "paint" => cmd_paint(&positional, &opts),
         "ncc" => cmd_ncc(&positional, &opts),
         "cutout" => cmd_cutout(&positional, &opts),
+        "laser-iso" => cmd_laser_iso(&positional, &opts),
         "script" => cmd_script(&positional),
         "-h" | "--help" | "help" => {
             print_usage();
@@ -74,6 +75,8 @@ fn print_usage() {
          \x20 paint  <gerber>      area-fill (pocket) the copper regions\n\
          \x20 ncc    <gerber>      non-copper clear (clear all non-copper area)\n\
          \x20 cutout <gerber>      mill the board outline with holding tabs\n\
+         \x20 laser-iso <file>     isolation with diode beam-shape compensation\n\
+         \x20                      (--beam-x --beam-y --beam-angle [--no-kerf] [--no-dynamic])\n\
          \x20 drill  <excellon>    drill an Excellon file to G-code\n\
          \x20 script <file>        run a batch script (see fc-script commands)\n\
          \n\
@@ -90,7 +93,7 @@ fn parse_opts(args: &[String]) -> HashMap<String, String> {
         if let Some(key) = args[i].strip_prefix("--") {
             // Known value-less boolean flags; everything else consumes a value
             // (which may be a negative number like -0.05).
-            const BOOL_FLAGS: &[&str] = &["mirror", "origin", "no-contour", "on-line"];
+            const BOOL_FLAGS: &[&str] = &["mirror", "origin", "no-contour", "on-line", "no-kerf", "no-dynamic"];
             if BOOL_FLAGS.contains(&key) {
                 m.insert(key.to_string(), String::new());
                 i += 1;
@@ -326,6 +329,30 @@ fn geo_bounds(mp: &geo::MultiPolygon<f64>) -> Option<(f64, f64, f64, f64)> {
     use geo::BoundingRect;
     mp.bounding_rect()
         .map(|r| (r.min().x, r.min().y, r.max().x, r.max().y))
+}
+
+fn cmd_laser_iso(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
+    let path = pos.first().context("laser-iso: expected a gerber/svg/dxf/pdf path")?;
+    let (geom, _units) = load_geometry(path, opts)?;
+    let beam = fc_laser::BeamShape {
+        width_x: getf(opts, "beam-x", 0.1),
+        width_y: getf(opts, "beam-y", 0.1),
+        angle_deg: getf(opts, "beam-angle", 0.0),
+    };
+    let passes = getf(opts, "passes", 1.0) as usize;
+    let overlap = getf(opts, "overlap", 0.0);
+    let compensate_kerf = !opts.contains_key("no-kerf");
+    let dynamic = !opts.contains_key("no-dynamic");
+    let paths = fc_laser::laser_isolation(&geom, &beam, passes, overlap, compensate_kerf);
+    // spindle_rpm is reused as the laser max S-value.
+    let jp = job_params_from_opts(opts, Units::Mm);
+    let gcode = fc_laser::laser_gcode(&paths, &jp, dynamic);
+    eprintln!(
+        "laser-iso: beam {:.3}x{:.3} @ {:.0}deg, {} pass(es), kerf-comp {}, {} path(s), {} (S<=.{:.0})",
+        beam.width_x, beam.width_y, beam.angle_deg, passes.max(1), compensate_kerf,
+        paths.len(), if dynamic { "M4 dynamic" } else { "M3" }, jp.spindle_rpm
+    );
+    write_output(opts, &gcode)
 }
 
 fn cmd_script(pos: &[String]) -> Result<()> {
