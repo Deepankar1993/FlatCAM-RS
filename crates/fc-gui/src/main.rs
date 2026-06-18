@@ -13,7 +13,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use eframe::egui;
-use fc_cam::{IsolationParams, PaintParams};
+use fc_cam::{CutoutParams, IsolationParams, NccParams, PaintParams};
 use fc_gcode::JobKind;
 use fc_geo::MultiPolygon;
 
@@ -221,6 +221,76 @@ impl FlatCamApp {
         self.add_toolpath_layer("Paint", &job, egui::Color32::from_rgb(230, 90, 200));
     }
 
+    fn run_ncc(&mut self) {
+        let Some(g) = &self.gerber else {
+            self.status = "Load a Gerber first".into();
+            return;
+        };
+        let p = &self.params;
+        let params = NccParams {
+            tool_diameter: p.tool_dia,
+            overlap: p.overlap.max(0.1),
+            ..Default::default()
+        };
+        let units = map_units(g.units);
+        let job = fc_cam::ncc_job(&g.solid_geometry, &params, units);
+        self.add_toolpath_layer("NCC", &job, egui::Color32::from_rgb(120, 200, 230));
+    }
+
+    fn run_cutout(&mut self) {
+        let Some(g) = &self.gerber else {
+            self.status = "Load a Gerber first".into();
+            return;
+        };
+        let Some((minx, miny, maxx, maxy)) = g.bounds() else {
+            self.status = "Empty geometry".into();
+            return;
+        };
+        let p = &self.params;
+        let cp = CutoutParams { tool_diameter: p.tool_dia, ..Default::default() };
+        let units = map_units(g.units);
+        let paths = fc_cam::cutout_rectangular(minx, miny, maxx, maxy, &cp);
+        let mut jp = cp.job.clone();
+        jp.units = units;
+        jp.tool_diameter = cp.tool_diameter;
+        let job = fc_gcode::CncJob { params: jp, kind: JobKind::Mill { paths } };
+        self.add_toolpath_layer("Cutout", &job, egui::Color32::from_rgb(240, 200, 60));
+    }
+
+    fn run_drilling(&mut self) {
+        let Some(e) = &self.excellon else {
+            self.status = "Load an Excellon (drill) file first".into();
+            return;
+        };
+        let units = match e.units {
+            fc_excellon::Units::Mm => fc_gcode::Units::Mm,
+            fc_excellon::Units::Inch => fc_gcode::Units::Inch,
+        };
+        let base = fc_gcode::JobParams { units, ..Default::default() };
+        let jobs = fc_cam::drilling_all(e, base);
+        let pp = fc_gcode::dialects::by_name(&self.preproc)
+            .unwrap_or_else(|| Box::new(fc_gcode::Grbl));
+        let mut all_points: Vec<(f64, f64)> = Vec::new();
+        let mut gcode = String::new();
+        for (tool, job) in &jobs {
+            if let JobKind::Drill { points } = &job.kind {
+                all_points.extend(points.iter().copied());
+            }
+            gcode.push_str(&format!("(--- tool T{tool} ---)\n"));
+            gcode.push_str(&job.to_gcode(pp.as_ref()));
+        }
+        let n = all_points.len();
+        let rings: Vec<Vec<(f64, f64)>> = all_points.into_iter().map(|p| vec![p]).collect();
+        self.layers.push(Layer {
+            name: "Drilling".into(),
+            rings,
+            color: egui::Color32::from_rgb(80, 160, 255),
+            closed: false,
+        });
+        self.last_gcode = Some(gcode);
+        self.status = format!("Drilling: {n} holes — G-code ready ({})", pp.name());
+    }
+
     fn add_toolpath_layer(&mut self, name: &str, job: &fc_gcode::CncJob, color: egui::Color32) {
         let rings = match &job.kind {
             JobKind::Mill { paths } => paths.clone(),
@@ -267,6 +337,15 @@ impl eframe::App for FlatCamApp {
                 }
                 if ui.button("Paint").clicked() {
                     self.run_paint();
+                }
+                if ui.button("NCC").clicked() {
+                    self.run_ncc();
+                }
+                if ui.button("Cutout").clicked() {
+                    self.run_cutout();
+                }
+                if ui.button("Drilling").clicked() {
+                    self.run_drilling();
                 }
                 ui.separator();
                 if ui.button("Save G-code…").clicked() {

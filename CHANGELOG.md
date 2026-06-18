@@ -2,6 +2,12 @@
 
 All notable changes to the Rust port are recorded here.
 
+## [0.8.1] — GUI: NCC / Cutout / Drilling operations
+
+### Added
+- **GUI** now runs NCC, Cutout, and Drilling (multi-tool) from the toolbar, in
+  addition to Isolation and Paint, each rendered and exportable to G-code.
+
 ## [0.8.0] — Phase 6: project model
 
 ### Added
