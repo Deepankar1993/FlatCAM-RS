@@ -22,6 +22,8 @@ use macros::MacroDef;
 
 pub mod writer;
 pub use writer::write_gerber;
+pub mod macro_primitives;
+pub mod attributes;
 
 #[derive(thiserror::Error, Debug)]
 pub enum GerberError {
@@ -77,6 +79,8 @@ pub struct Gerber {
     pub apertures: HashMap<i32, Aperture>,
     pub solid_geometry: MultiPolygon<f64>,
     pub follow_geometry: Vec<LineString<f64>>,
+    /// X2/X3 file attributes (`%TF...%`), keyed by attribute name.
+    pub file_attributes: HashMap<String, Vec<String>>,
 }
 
 impl Gerber {
@@ -100,6 +104,7 @@ pub fn parse(content: &str) -> Result<Gerber, GerberError> {
         apertures: p.apertures,
         solid_geometry: p.solid,
         follow_geometry: p.follow,
+        file_attributes: p.file_attributes,
     })
 }
 
@@ -129,6 +134,7 @@ struct Parser {
     clear: Vec<Polygon<f64>>,
     solid: MultiPolygon<f64>,
     follow: Vec<LineString<f64>>,
+    file_attributes: HashMap<String, Vec<String>>,
 }
 
 impl Parser {
@@ -154,6 +160,7 @@ impl Parser {
             clear: vec![],
             solid: MultiPolygon::new(vec![]),
             follow: vec![],
+            file_attributes: HashMap::new(),
         }
     }
 
@@ -196,13 +203,21 @@ impl Parser {
                 self.flush_path();
                 self.merge_polarity();
                 self.polarity_dark = !s.contains('C');
+            } else if s.starts_with("TF") || s.starts_with("TA")
+                || s.starts_with("TO") || s.starts_with("TD")
+            {
+                // X2/X3 attributes: collect file-level ones, ignore the rest.
+                if let Some(attr) = attributes::parse_attribute(&s) {
+                    if attr.scope == attributes::AttrScope::File && !attr.name.is_empty() {
+                        self.file_attributes.insert(attr.name, attr.values);
+                    }
+                }
             } else if s.starts_with("IP") || s.starts_with("AS") || s.starts_with("IR")
                 || s.starts_with("MI") || s.starts_with("OF") || s.starts_with("SF")
-                || s.starts_with("IN") || s.starts_with("TF") || s.starts_with("TA")
-                || s.starts_with("TO") || s.starts_with("TD") || s.starts_with("LM")
+                || s.starts_with("IN") || s.starts_with("LM")
                 || s.starts_with("LR") || s.starts_with("LS")
             {
-                // ignored attribute / deprecated extended commands
+                // ignored / deprecated extended commands
             }
             i += 1;
         }

@@ -2,6 +2,18 @@
 
 All notable changes to the Rust port are recorded here.
 
+## [0.20.0] — Gerber completeness: macro thermal/moiré + X2 attributes
+
+### Added
+- **`fc-gerber::macro_primitives`** — aperture-macro primitives **7 (thermal)**
+  and **6 (moiré)**, wired into the macro evaluator (`eval_primitive` codes 6/7).
+  The Gerber macro set is now complete (1/2/4/5/20/21/22 + 6/7).
+- **`fc-gerber::attributes`** — X2/X3 attribute parsing (`%TF/%TA/%TO/%TD`);
+  file attributes (`%TF`) are collected onto `Gerber.file_attributes`.
+
+### Verified
+- `cargo test --workspace`: 482 passed, 0 warnings.
+
 ## [0.19.0] — hardening: integration tests, laser dialects, docs, GUI settings
 
 ### Added

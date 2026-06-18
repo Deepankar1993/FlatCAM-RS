@@ -145,7 +145,8 @@ fn eval_primitive(code: i32, a: &[f64], steps: usize) -> (Option<MultiPolygon<f6
                 exposure,
             )
         }
-        // 6 (moire) and 7 (thermal) are uncommon in CAM input; skipped for now.
+        6 => (Some(crate::macro_primitives::moire(a, steps)), true),
+        7 => (Some(crate::macro_primitives::thermal(a, steps)), true),
         _ => (None, true),
     }
 }
