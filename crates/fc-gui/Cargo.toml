@@ -13,6 +13,7 @@ fc-gerber = { path = "../fc-gerber" }
 fc-excellon = { path = "../fc-excellon" }
 fc-gcode = { path = "../fc-gcode" }
 fc-cam = { path = "../fc-cam" }
+fc-editor = { path = "../fc-editor" }
 fc-svg = { path = "../fc-svg" }
 eframe = "0.29"
 rfd = "0.15"

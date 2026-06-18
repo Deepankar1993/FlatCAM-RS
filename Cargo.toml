@@ -12,6 +12,7 @@ members = [
     "crates/fc-app",
     "crates/fc-hpgl",
     "crates/fc-dxf",
+    "crates/fc-editor",
 ]
 exclude = ["_nettest", "_dxfprobe"]
 

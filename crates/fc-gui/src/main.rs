@@ -70,6 +70,38 @@ impl Camera {
             c.y - ((p.1 - self.center.1) as f32) * self.scale, // flip Y
         )
     }
+    /// Inverse of [`to_screen`]: screen point → world coordinates.
+    fn to_world(&self, p: egui::Pos2, rect: egui::Rect) -> (f64, f64) {
+        let c = rect.center();
+        let s = self.scale.max(1e-6);
+        (
+            self.center.0 + ((p.x - c.x) / s) as f64,
+            self.center.1 - ((p.y - c.y) / s) as f64, // flip Y
+        )
+    }
+}
+
+/// Which interactive editor is active.
+#[derive(Default)]
+enum Editor {
+    #[default]
+    None,
+    Geo(fc_editor::GeoEditor),
+    Gerber(fc_editor::GerberEditor),
+    Exc(fc_editor::ExcEditor),
+}
+
+/// The current edit action (what a canvas click does).
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum EditTool {
+    #[default]
+    Select,
+    Pad,
+    Drill,
+    Point,
+    Circle,
+    Rect,
+    Path, // accumulate points; Finish commits as track/line/region
 }
 
 struct CamParams {
@@ -94,6 +126,14 @@ struct FlatCamApp {
     status: String,
     last_gcode: Option<String>,
     preproc: String,
+    // --- editor state ---
+    editor: Editor,
+    edit_tool: EditTool,
+    edit_size: f64,
+    pending_path: Vec<(f64, f64)>,
+    exc_selected: Option<(i32, usize)>,
+    /// Geometry baked from the active editor; used as the CAM region when set.
+    edit_region: Option<MultiPolygon<f64>>,
 }
 
 fn map_units(u: fc_gerber::Units) -> fc_gcode::Units {
@@ -189,9 +229,20 @@ impl FlatCamApp {
         }
     }
 
+    /// The active CAM region: a baked editor geometry takes priority, else the
+    /// loaded Gerber's copper.
+    fn current_region(&self) -> Option<(MultiPolygon<f64>, fc_gcode::Units)> {
+        if let Some(r) = &self.edit_region {
+            return Some((r.clone(), fc_gcode::Units::Mm));
+        }
+        self.gerber
+            .as_ref()
+            .map(|g| (g.solid_geometry.clone(), map_units(g.units)))
+    }
+
     fn run_isolation(&mut self) {
-        let Some(g) = &self.gerber else {
-            self.status = "Load a Gerber first".into();
+        let Some((geom, units)) = self.current_region() else {
+            self.status = "Load a Gerber or bake an editor first".into();
             return;
         };
         let p = &self.params;
@@ -201,13 +252,13 @@ impl FlatCamApp {
             overlap: p.overlap,
             ..Default::default()
         };
-        let job = fc_cam::isolation(g, &params);
+        let job = fc_cam::isolation_geo(&geom, units, &params);
         self.add_toolpath_layer("Isolation", &job, egui::Color32::from_rgb(60, 220, 120));
     }
 
     fn run_paint(&mut self) {
-        let Some(g) = &self.gerber else {
-            self.status = "Load a Gerber first".into();
+        let Some((geom, units)) = self.current_region() else {
+            self.status = "Load a Gerber or bake an editor first".into();
             return;
         };
         let p = &self.params;
@@ -216,14 +267,13 @@ impl FlatCamApp {
             overlap: p.overlap.max(0.1),
             ..Default::default()
         };
-        let units = map_units(g.units);
-        let job = fc_cam::paint_job(&g.solid_geometry, &pp, units);
+        let job = fc_cam::paint_job(&geom, &pp, units);
         self.add_toolpath_layer("Paint", &job, egui::Color32::from_rgb(230, 90, 200));
     }
 
     fn run_ncc(&mut self) {
-        let Some(g) = &self.gerber else {
-            self.status = "Load a Gerber first".into();
+        let Some((geom, units)) = self.current_region() else {
+            self.status = "Load a Gerber or bake an editor first".into();
             return;
         };
         let p = &self.params;
@@ -232,23 +282,21 @@ impl FlatCamApp {
             overlap: p.overlap.max(0.1),
             ..Default::default()
         };
-        let units = map_units(g.units);
-        let job = fc_cam::ncc_job(&g.solid_geometry, &params, units);
+        let job = fc_cam::ncc_job(&geom, &params, units);
         self.add_toolpath_layer("NCC", &job, egui::Color32::from_rgb(120, 200, 230));
     }
 
     fn run_cutout(&mut self) {
-        let Some(g) = &self.gerber else {
-            self.status = "Load a Gerber first".into();
+        let Some((geom, units)) = self.current_region() else {
+            self.status = "Load a Gerber or bake an editor first".into();
             return;
         };
-        let Some((minx, miny, maxx, maxy)) = g.bounds() else {
+        let Some((minx, miny, maxx, maxy)) = geo_bounds(&geom) else {
             self.status = "Empty geometry".into();
             return;
         };
         let p = &self.params;
         let cp = CutoutParams { tool_diameter: p.tool_dia, ..Default::default() };
-        let units = map_units(g.units);
         let paths = fc_cam::cutout_rectangular(minx, miny, maxx, maxy, &cp);
         let mut jp = cp.job.clone();
         jp.units = units;
@@ -320,6 +368,166 @@ impl FlatCamApp {
             }
         }
     }
+
+    // ----- interactive editors -----
+
+    fn start_editor(&mut self, kind: &str) {
+        self.edit_region = None;
+        self.pending_path.clear();
+        self.exc_selected = None;
+        self.edit_tool = EditTool::Select;
+        if self.edit_size <= 0.0 {
+            self.edit_size = 1.0;
+        }
+        match kind {
+            "geo" => self.editor = Editor::Geo(Default::default()),
+            "gerber" => self.editor = Editor::Gerber(Default::default()),
+            "exc" => {
+                let mut e = fc_editor::ExcEditor::default();
+                e.add_tool(1, self.params.tool_dia.max(0.1));
+                self.editor = Editor::Exc(e);
+            }
+            _ => {}
+        }
+        self.status = format!("{kind} editor — click to add, Bake to use for CAM");
+    }
+
+    fn editor_active(&self) -> bool {
+        !matches!(self.editor, Editor::None)
+    }
+
+    /// 0 none, 1 geo, 2 gerber, 3 excellon.
+    fn editor_kind(&self) -> u8 {
+        match self.editor {
+            Editor::None => 0,
+            Editor::Geo(_) => 1,
+            Editor::Gerber(_) => 2,
+            Editor::Exc(_) => 3,
+        }
+    }
+
+    fn handle_edit_click(&mut self, world: (f64, f64)) {
+        let tool = self.edit_tool;
+        let size = self.edit_size.max(0.1);
+        let dia = self.params.tool_dia.max(0.1);
+        let tol = (self.edit_size.max(0.5)) * 1.5;
+        match &mut self.editor {
+            Editor::Geo(ed) => match tool {
+                EditTool::Select => {
+                    ed.select_at(world, tol);
+                }
+                EditTool::Point => {
+                    ed.add_point(world);
+                }
+                EditTool::Circle => {
+                    ed.add_circle(world.0, world.1, size, 48);
+                }
+                EditTool::Rect => {
+                    ed.add_rect(world.0 - size / 2.0, world.1 - size / 2.0, size, size);
+                }
+                EditTool::Path => {
+                    self.pending_path.push(world);
+                }
+                _ => {}
+            },
+            Editor::Gerber(ed) => match tool {
+                EditTool::Select => {
+                    ed.select_at(world, tol);
+                }
+                EditTool::Pad => {
+                    ed.add_pad(world, dia);
+                }
+                EditTool::Path => {
+                    self.pending_path.push(world);
+                }
+                _ => {}
+            },
+            Editor::Exc(ed) => match tool {
+                EditTool::Select => {
+                    self.exc_selected = ed.hit_test_drill(world, tol);
+                }
+                EditTool::Drill => {
+                    ed.add_drill(world);
+                }
+                _ => {}
+            },
+            Editor::None => {}
+        }
+    }
+
+    fn finish_path(&mut self) {
+        if self.pending_path.len() < 2 {
+            self.pending_path.clear();
+            return;
+        }
+        let path = std::mem::take(&mut self.pending_path);
+        let w = self.params.tool_dia.max(0.1);
+        match &mut self.editor {
+            Editor::Gerber(ed) => {
+                ed.add_track(path, w);
+            }
+            Editor::Geo(ed) => {
+                ed.add_line(path);
+            }
+            _ => {}
+        }
+    }
+
+    fn delete_selected(&mut self) {
+        match &mut self.editor {
+            Editor::Geo(ed) => {
+                if let Some(i) = ed.selected {
+                    ed.delete(i);
+                }
+            }
+            Editor::Gerber(ed) => {
+                if let Some(i) = ed.selected {
+                    ed.delete(i);
+                }
+            }
+            Editor::Exc(ed) => {
+                if let Some((t, i)) = self.exc_selected.take() {
+                    ed.delete_drill(t, i);
+                }
+            }
+            Editor::None => {}
+        }
+    }
+
+    fn editor_geometry(&self) -> Option<MultiPolygon<f64>> {
+        match &self.editor {
+            Editor::Geo(ed) => Some(ed.to_multipolygon()),
+            Editor::Gerber(ed) => Some(ed.to_geometry(48)),
+            Editor::Exc(ed) => Some(ed.to_geometry(24)),
+            Editor::None => None,
+        }
+    }
+
+    fn bake_editor(&mut self) {
+        let Some(mp) = self.editor_geometry() else {
+            self.status = "No editor active".into();
+            return;
+        };
+        let rings = rings_of(&mp);
+        self.edit_region = Some(mp);
+        self.layers.retain(|l| l.name != "Edit");
+        self.layers.push(Layer {
+            name: "Edit".into(),
+            rings,
+            color: egui::Color32::from_rgb(150, 220, 150),
+            closed: true,
+        });
+        self.camera.initialized = false;
+        self.status = "Baked editor geometry — CAM ops now use it".into();
+    }
+
+    fn editor_overlay(&self) -> Vec<Vec<(f64, f64)>> {
+        let mut rings = self.editor_geometry().map(|m| rings_of(&m)).unwrap_or_default();
+        if self.pending_path.len() >= 2 {
+            rings.push(self.pending_path.clone());
+        }
+        rings
+    }
 }
 
 impl eframe::App for FlatCamApp {
@@ -381,6 +589,64 @@ impl eframe::App for FlatCamApp {
             for l in &self.layers {
                 ui.colored_label(l.color, format!("{} ({} paths)", l.name, l.rings.len()));
             }
+
+            ui.separator();
+            egui::CollapsingHeader::new("Editor").default_open(true).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("Geo").clicked() {
+                        self.start_editor("geo");
+                    }
+                    if ui.button("Gerber").clicked() {
+                        self.start_editor("gerber");
+                    }
+                    if ui.button("Excellon").clicked() {
+                        self.start_editor("exc");
+                    }
+                });
+                let kind = self.editor_kind();
+                if kind != 0 {
+                    if self.edit_size <= 0.0 {
+                        self.edit_size = 1.0;
+                    }
+                    ui.add(egui::Slider::new(&mut self.edit_size, 0.1..=20.0).text("Edit size"));
+                    ui.horizontal_wrapped(|ui| {
+                        ui.selectable_value(&mut self.edit_tool, EditTool::Select, "Select");
+                        match kind {
+                            1 => {
+                                ui.selectable_value(&mut self.edit_tool, EditTool::Point, "Point");
+                                ui.selectable_value(&mut self.edit_tool, EditTool::Rect, "Rect");
+                                ui.selectable_value(&mut self.edit_tool, EditTool::Circle, "Circle");
+                                ui.selectable_value(&mut self.edit_tool, EditTool::Path, "Line");
+                            }
+                            2 => {
+                                ui.selectable_value(&mut self.edit_tool, EditTool::Pad, "Pad");
+                                ui.selectable_value(&mut self.edit_tool, EditTool::Path, "Track");
+                            }
+                            3 => {
+                                ui.selectable_value(&mut self.edit_tool, EditTool::Drill, "Drill");
+                            }
+                            _ => {}
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Finish path").clicked() {
+                            self.finish_path();
+                        }
+                        if ui.button("Delete sel").clicked() {
+                            self.delete_selected();
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Bake → region").clicked() {
+                            self.bake_editor();
+                        }
+                        if ui.button("Close").clicked() {
+                            self.editor = Editor::None;
+                            self.pending_path.clear();
+                        }
+                    });
+                }
+            });
         });
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
@@ -416,6 +682,19 @@ impl eframe::App for FlatCamApp {
                 self.camera.scale *= factor;
             }
 
+            // Edit interaction: click to add/select, Delete to remove.
+            if self.editor_active() {
+                if response.clicked() {
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        let world = self.camera.to_world(pos, rect);
+                        self.handle_edit_click(world);
+                    }
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Delete)) {
+                    self.delete_selected();
+                }
+            }
+
             for layer in &self.layers {
                 let stroke = egui::Stroke::new(1.0, layer.color);
                 for ring in &layer.rings {
@@ -434,6 +713,29 @@ impl eframe::App for FlatCamApp {
                     }
                 }
             }
+
+            // Editor overlay: live geometry + pending path + vertices.
+            if self.editor_active() {
+                let rings = self.editor_overlay();
+                let line = egui::Color32::from_rgb(120, 220, 255);
+                let vert = egui::Color32::from_rgb(255, 230, 120);
+                let stroke = egui::Stroke::new(1.5, line);
+                for ring in &rings {
+                    if ring.len() == 1 {
+                        let s = self.camera.to_screen(ring[0], rect);
+                        painter.circle_filled(s, 3.0, line);
+                        continue;
+                    }
+                    let pts: Vec<egui::Pos2> =
+                        ring.iter().map(|&p| self.camera.to_screen(p, rect)).collect();
+                    for w in pts.windows(2) {
+                        painter.line_segment([w[0], w[1]], stroke);
+                    }
+                    for p in &pts {
+                        painter.circle_filled(*p, 2.0, vert);
+                    }
+                }
+            }
         });
     }
 }
@@ -445,6 +747,10 @@ fn circle_ring(cx: f64, cy: f64, r: f64, n: usize) -> Vec<(f64, f64)> {
             (cx + r * a.cos(), cy + r * a.sin())
         })
         .collect()
+}
+
+fn geo_bounds(mp: &MultiPolygon<f64>) -> Option<(f64, f64, f64, f64)> {
+    fc_geo::bounds(mp)
 }
 
 fn rings_of(mp: &MultiPolygon<f64>) -> Vec<Vec<(f64, f64)>> {

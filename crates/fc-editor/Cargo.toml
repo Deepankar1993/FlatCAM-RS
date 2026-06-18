@@ -1,0 +1,8 @@
+[package]
+name = "fc-editor"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+fc-geo = { path = "../fc-geo" }
+geo.workspace = true

@@ -1275,6 +1275,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fc-editor"
+version = "0.1.0"
+dependencies = [
+ "fc-geo",
+ "geo 0.29.3",
+]
+
+[[package]]
 name = "fc-excellon"
 version = "0.1.0"
 dependencies = [
@@ -1315,6 +1323,7 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "fc-cam",
+ "fc-editor",
  "fc-excellon",
  "fc-gcode",
  "fc-geo",

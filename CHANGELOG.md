@@ -2,6 +2,21 @@
 
 All notable changes to the Rust port are recorded here.
 
+## [0.12.0] — Phase 7: interactive editors
+
+### Added
+- **`fc-editor`** (new crate) — GUI-free, unit-tested editor cores authored by
+  4 agents in parallel: `geo_editor` (point/line/rect/circle, select, move,
+  delete), `gerber_editor` (pad/track/region), `exc_editor` (drills/slots/array,
+  hit-test), `gcode_editor` (line-based find/replace/renumber). 41 tests.
+- **GUI editor integration** — start Geo/Gerber/Excellon editors, click-to-add
+  primitives, select/delete, accumulate-and-finish paths, live overlay, and
+  "Bake → region" so Isolation/Paint/NCC/Cutout run on the edited geometry
+  (CAM run methods now use a unified `current_region`).
+
+### Verified
+- `cargo test --workspace`: 281 passed, 0 warnings; `cargo build -p fc-gui` ok.
+
 ## [0.11.0] — Phase 4: DXF import
 
 ### Added
