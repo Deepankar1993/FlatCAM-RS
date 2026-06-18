@@ -11,6 +11,9 @@ use fc_geo::{buffer_path, circle, MultiPolygon};
 use geo::Coord;
 use std::collections::BTreeMap;
 
+pub mod writer;
+pub use writer::write_excellon;
+
 #[derive(thiserror::Error, Debug)]
 pub enum ExcellonError {
     #[error("empty drill file")]

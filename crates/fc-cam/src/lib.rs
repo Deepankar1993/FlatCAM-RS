@@ -68,6 +68,18 @@ pub mod dogbone;
 pub use dogbone::corner_relief;
 pub mod panel_extras;
 pub use panel_extras::{mouse_bites, vscore_line};
+pub mod copper_pour;
+pub use copper_pour::copper_pour;
+pub mod thermal;
+pub use thermal::thermal_relief;
+pub mod teardrops;
+pub use teardrops::teardrop;
+pub mod spiral_pocket;
+pub use spiral_pocket::contour_parallel;
+pub mod scale_fit;
+pub use scale_fit::{convert_units, scale_to_fit};
+pub mod bridges;
+pub use bridges::add_bridges;
 
 /// Parameters for isolation routing.
 #[derive(Clone, Debug)]

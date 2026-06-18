@@ -2,6 +2,27 @@
 
 All notable changes to the Rust port are recorded here.
 
+## [0.10.0] — Second big parallel batch: writers + 8 more features
+
+Authored by 10 agents concurrently (~74 s), integrated with one `mut` cleanup.
+
+### Added
+- **`fc-gerber::write_gerber`** — export geometry to RS-274X (regions, with
+  clear-polarity holes); round-trips through the parser within 1% area.
+- **`fc-excellon::write_excellon`** — export tools/drills/slots; round-trips
+  (count + diameters + units preserved).
+- **`fc-cam`**: `copper_pour` (ground fill with clearance), `thermal`
+  (thermal-relief pads), `teardrops`, `spiral_pocket` (contour-parallel
+  pocketing), `scale_fit` (fit-to-size + mm/in conversion), `bridges` (generic
+  holding tabs on any polyline).
+- **`fc-geo::hatch`** — angled/cross-hatch fill lines clipped to a region.
+- **`fc-gcode::dialects_more`** — Smoothie, TinyG, EMC2, GRBL dynamic-laser
+  (M4); chained into `dialects::by_name`.
+
+### Verified
+- `cargo test --workspace`: 237 passed, 0 warnings. Gerber + Excellon now
+  round-trip (parse → write → parse).
+
 ## [0.9.0] — Big parallel batch: 12 features at once
 
 Authored by 12 agents concurrently (~82 s, ~429 K agent-tokens) against the

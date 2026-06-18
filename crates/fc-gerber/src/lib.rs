@@ -20,6 +20,9 @@ use std::f64::consts::PI;
 mod macros;
 use macros::MacroDef;
 
+pub mod writer;
+pub use writer::write_gerber;
+
 #[derive(thiserror::Error, Debug)]
 pub enum GerberError {
     #[error("no format specification (FS) found before coordinate data")]
