@@ -63,6 +63,23 @@ pub fn draw_tool_icon(name: &str, painter: &egui::Painter, rect: egui::Rect, col
         "markers" => map_pin(painter, r, color, stroke),
         "calculators" => calculator(painter, r, stroke),
         "mirror" => mirror_glyph(painter, r, stroke),
+        "invert" => invert_glyph(painter, r, color, stroke),
+        "thieving" => thieving(painter, r, stroke),
+        "copperfill" => copper_fill(painter, r, stroke),
+        "fiducials" => fiducials(painter, r, color, stroke),
+        "corners" => corners(painter, r, stroke),
+        "optimal" => optimal(painter, r, color, stroke),
+        "report" => report(painter, r, stroke),
+        "rulescheck" => rules_check(painter, r, stroke),
+        "solderpaste" => solder_paste(painter, r, color, stroke),
+        "levelling" => levelling(painter, r, color, stroke),
+        "extractdrills" => extract_drills(painter, r, stroke),
+        "punch" => punch(painter, r, stroke),
+        "qrcode" => qr_code(painter, r, color, stroke),
+        "subtract" => subtract(painter, r, stroke),
+        "teardrops" => teardrops(painter, r, color, stroke),
+        "bridges" => bridges(painter, r, stroke),
+        "scalefit" => scale_fit(painter, r, stroke),
         _ => fallback(painter, r, stroke),
     }
 }
@@ -635,6 +652,329 @@ fn mirror_glyph(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
         egui::pos2(r.right(), r.bottom() - r.height() * 0.2),
     ];
     painter.add(egui::Shape::line(rpts, stroke));
+}
+
+/// Invert: an outer square with a smaller inner square knocked out (hatched).
+fn invert_glyph(painter: &egui::Painter, r: egui::Rect, color: egui::Color32, stroke: egui::Stroke) {
+    rect_outline(painter, r, stroke);
+    let inner = inset(r, 0.5);
+    rect_outline(painter, inner, stroke);
+    // Fill the inner square with dense horizontal hatch lines (the "flipped" tone).
+    let fill = egui::Stroke::new(STROKE_W * 0.7, color);
+    let rows = 5;
+    for i in 1..rows {
+        let y = inner.top() + (i as f32 / rows as f32) * inner.height();
+        painter.line_segment(
+            [egui::pos2(inner.left(), y), egui::pos2(inner.right(), y)],
+            fill,
+        );
+    }
+}
+
+/// Thieving: a rectangle sprinkled with a 3x2 grid of tiny filled dots.
+fn thieving(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
+    rect_outline(painter, r, stroke);
+    let dot = STROKE_W;
+    for col in 0..3 {
+        for row in 0..2 {
+            let x = r.left() + r.width() * (0.25 + col as f32 * 0.25);
+            let y = r.top() + r.height() * (0.35 + row as f32 * 0.3);
+            painter.circle_filled(egui::pos2(x, y), dot, stroke.color);
+        }
+    }
+}
+
+/// Copper-fill: a rectangle densely filled with horizontal lines (solid pour).
+fn copper_fill(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
+    rect_outline(painter, r, stroke);
+    let rows = 6;
+    let pad = r.width() * 0.12;
+    for i in 1..rows {
+        let y = r.top() + (i as f32 / rows as f32) * r.height();
+        painter.line_segment(
+            [egui::pos2(r.left() + pad, y), egui::pos2(r.right() - pad, y)],
+            stroke,
+        );
+    }
+}
+
+/// Fiducials: concentric circles with a centre dot (a fiducial target).
+fn fiducials(painter: &egui::Painter, r: egui::Rect, color: egui::Color32, stroke: egui::Stroke) {
+    let c = r.center();
+    painter.circle_stroke(c, r.width() * 0.42, stroke);
+    painter.circle_stroke(c, r.width() * 0.24, stroke);
+    painter.circle_filled(c, STROKE_W * 1.4, color);
+}
+
+/// Corners: an L-shaped corner bracket pair at opposite corners.
+fn corners(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
+    let len = r.width() * 0.4;
+    // Top-left bracket.
+    painter.line_segment(
+        [egui::pos2(r.left(), r.top()), egui::pos2(r.left() + len, r.top())],
+        stroke,
+    );
+    painter.line_segment(
+        [egui::pos2(r.left(), r.top()), egui::pos2(r.left(), r.top() + len)],
+        stroke,
+    );
+    // Bottom-right bracket.
+    painter.line_segment(
+        [egui::pos2(r.right(), r.bottom()), egui::pos2(r.right() - len, r.bottom())],
+        stroke,
+    );
+    painter.line_segment(
+        [egui::pos2(r.right(), r.bottom()), egui::pos2(r.right(), r.bottom() - len)],
+        stroke,
+    );
+}
+
+/// Optimal: two small circles joined by a line with a centre tick (a caliper).
+fn optimal(painter: &egui::Painter, r: egui::Rect, color: egui::Color32, stroke: egui::Stroke) {
+    let y = r.center().y;
+    let a = egui::pos2(r.left() + r.width() * 0.18, y);
+    let b = egui::pos2(r.right() - r.width() * 0.18, y);
+    let rad = r.width() * 0.12;
+    painter.circle_stroke(a, rad, stroke);
+    painter.circle_stroke(b, rad, stroke);
+    painter.circle_filled(a, STROKE_W, color);
+    painter.circle_filled(b, STROKE_W, color);
+    // Measure line between the circles.
+    painter.line_segment([egui::pos2(a.x + rad, y), egui::pos2(b.x - rad, y)], stroke);
+    // Centre tick.
+    let cx = r.center().x;
+    let t = r.height() * 0.16;
+    painter.line_segment([egui::pos2(cx, y - t), egui::pos2(cx, y + t)], stroke);
+}
+
+/// Report: a clipboard/document with a checkmark.
+fn report(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
+    let page = inset(r, 0.78);
+    rect_outline(painter, page, stroke);
+    // Clip at the top.
+    let clip = egui::Rect::from_min_max(
+        egui::pos2(page.center().x - page.width() * 0.18, r.top()),
+        egui::pos2(page.center().x + page.width() * 0.18, page.top() + page.height() * 0.1),
+    );
+    rect_outline(painter, clip, stroke);
+    // Checkmark inside.
+    let c = page.center();
+    painter.line_segment(
+        [
+            egui::pos2(c.x - page.width() * 0.22, c.y),
+            egui::pos2(c.x - page.width() * 0.04, c.y + page.height() * 0.16),
+        ],
+        stroke,
+    );
+    painter.line_segment(
+        [
+            egui::pos2(c.x - page.width() * 0.04, c.y + page.height() * 0.16),
+            egui::pos2(c.x + page.width() * 0.26, c.y - page.height() * 0.18),
+        ],
+        stroke,
+    );
+}
+
+/// Rules-check: a rounded rect with two check rows (a tick + line, twice).
+fn rules_check(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
+    rect_outline(painter, r, stroke);
+    for row in 0..2 {
+        let y = r.top() + r.height() * (0.35 + row as f32 * 0.3);
+        // Small tick.
+        let tx = r.left() + r.width() * 0.22;
+        painter.line_segment(
+            [egui::pos2(tx - r.width() * 0.06, y), egui::pos2(tx, y + r.height() * 0.08)],
+            stroke,
+        );
+        painter.line_segment(
+            [egui::pos2(tx, y + r.height() * 0.08), egui::pos2(tx + r.width() * 0.1, y - r.height() * 0.08)],
+            stroke,
+        );
+        // Row line.
+        painter.line_segment(
+            [egui::pos2(r.left() + r.width() * 0.45, y), egui::pos2(r.right() - r.width() * 0.18, y)],
+            stroke,
+        );
+    }
+}
+
+/// Solder-paste: a syringe — barrel rect + plunger line + a drop at the tip.
+fn solder_paste(painter: &egui::Painter, r: egui::Rect, color: egui::Color32, stroke: egui::Stroke) {
+    let bw = r.width() * 0.26;
+    let cx = r.center().x;
+    let barrel = egui::Rect::from_min_max(
+        egui::pos2(cx - bw, r.top() + r.height() * 0.12),
+        egui::pos2(cx + bw, r.bottom() - r.height() * 0.28),
+    );
+    rect_outline(painter, barrel, stroke);
+    // Plunger sticking out the top.
+    painter.line_segment(
+        [egui::pos2(cx, r.top()), egui::pos2(cx, barrel.top())],
+        stroke,
+    );
+    painter.line_segment(
+        [egui::pos2(cx - bw * 0.7, r.top()), egui::pos2(cx + bw * 0.7, r.top())],
+        stroke,
+    );
+    // Nozzle taper down to the tip.
+    let tip = egui::pos2(cx, r.bottom());
+    painter.line_segment([egui::pos2(cx - bw, barrel.bottom()), tip], stroke);
+    painter.line_segment([egui::pos2(cx + bw, barrel.bottom()), tip], stroke);
+    // Drop at the tip.
+    painter.circle_filled(egui::pos2(cx, r.bottom()), STROKE_W * 1.2, color);
+}
+
+/// Levelling: a 3x3 probe dot grid with a small probe tip above one dot.
+fn levelling(painter: &egui::Painter, r: egui::Rect, color: egui::Color32, stroke: egui::Stroke) {
+    let grid = egui::Rect::from_min_max(
+        egui::pos2(r.left() + r.width() * 0.12, r.top() + r.height() * 0.35),
+        egui::pos2(r.right() - r.width() * 0.12, r.bottom() - r.height() * 0.05),
+    );
+    for col in 0..3 {
+        for row in 0..3 {
+            let x = grid.left() + grid.width() * (col as f32 / 2.0);
+            let y = grid.top() + grid.height() * (row as f32 / 2.0);
+            painter.circle_filled(egui::pos2(x, y), STROKE_W * 0.9, color);
+        }
+    }
+    // Probe tip above the top-middle dot.
+    let target = egui::pos2(grid.center().x, grid.top());
+    painter.line_segment(
+        [egui::pos2(target.x, r.top()), egui::pos2(target.x, target.y - r.height() * 0.06)],
+        stroke,
+    );
+    let a = r.width() * 0.07;
+    painter.line_segment(
+        [egui::pos2(target.x, target.y - r.height() * 0.06), egui::pos2(target.x - a, target.y - r.height() * 0.18)],
+        stroke,
+    );
+    painter.line_segment(
+        [egui::pos2(target.x, target.y - r.height() * 0.06), egui::pos2(target.x + a, target.y - r.height() * 0.18)],
+        stroke,
+    );
+}
+
+/// Extract-drills: a hole (circle) with an arrow/bit pulling out above it.
+fn extract_drills(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
+    let hole_c = egui::pos2(r.center().x, r.bottom() - r.height() * 0.2);
+    painter.circle_stroke(hole_c, r.width() * 0.18, stroke);
+    // Upward arrow (the bit being extracted).
+    let cx = r.center().x;
+    let top = r.top();
+    let bot = r.center().y + r.height() * 0.05;
+    painter.line_segment([egui::pos2(cx, bot), egui::pos2(cx, top)], stroke);
+    let a = r.width() * 0.16;
+    painter.line_segment([egui::pos2(cx, top), egui::pos2(cx - a, top + a)], stroke);
+    painter.line_segment([egui::pos2(cx, top), egui::pos2(cx + a, top + a)], stroke);
+}
+
+/// Punch: a donut — an outer circle with a concentric hole.
+fn punch(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
+    let c = r.center();
+    painter.circle_stroke(c, r.width() * 0.42, stroke);
+    painter.circle_stroke(c, r.width() * 0.18, stroke);
+}
+
+/// QR-code: a 3x3 block pattern with filled finder squares in the corners.
+fn qr_code(painter: &egui::Painter, r: egui::Rect, color: egui::Color32, stroke: egui::Stroke) {
+    rect_outline(painter, r, stroke);
+    let cells = 3;
+    let sz = r.width() / (cells as f32);
+    // Filled cells: a small recognisable pattern incl. corner "finders".
+    let filled = [(0, 0), (2, 0), (0, 2), (1, 1)];
+    let fill = egui::Stroke::new(STROKE_W * 0.8, color);
+    for (col, row) in filled {
+        let x = r.left() + col as f32 * sz;
+        let y = r.top() + row as f32 * sz;
+        let cell = egui::Rect::from_min_max(
+            egui::pos2(x + sz * 0.14, y + sz * 0.14),
+            egui::pos2(x + sz * 0.86, y + sz * 0.86),
+        );
+        // Fill the cell with a few horizontal passes drawn as closed lines.
+        rect_outline(painter, cell, fill);
+        let passes = 3;
+        for i in 1..passes {
+            let yy = cell.top() + (i as f32 / passes as f32) * cell.height();
+            painter.line_segment(
+                [egui::pos2(cell.left(), yy), egui::pos2(cell.right(), yy)],
+                fill,
+            );
+        }
+    }
+}
+
+/// Subtract: two overlapping circle outlines with a minus glyph (difference).
+fn subtract(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
+    let rad = r.width() * 0.26;
+    let a = egui::pos2(r.left() + r.width() * 0.36, r.center().y);
+    let b = egui::pos2(r.right() - r.width() * 0.36, r.center().y);
+    painter.circle_stroke(a, rad, stroke);
+    painter.circle_stroke(b, rad, stroke);
+    // Minus sign across the overlap.
+    let c = r.center();
+    let m = r.width() * 0.12;
+    painter.line_segment([egui::pos2(c.x - m, c.y), egui::pos2(c.x + m, c.y)], stroke);
+}
+
+/// Teardrops: a pad circle with a teardrop fillet to a trace line.
+fn teardrops(painter: &egui::Painter, r: egui::Rect, color: egui::Color32, stroke: egui::Stroke) {
+    let pad = egui::pos2(r.right() - r.width() * 0.28, r.center().y);
+    let rad = r.width() * 0.2;
+    painter.circle_stroke(pad, rad, stroke);
+    painter.circle_filled(pad, STROKE_W * 1.1, color);
+    // Trace coming in from the left.
+    let trace_l = egui::pos2(r.left(), r.center().y);
+    // Teardrop fillet: tapered shape from the trace into the pad.
+    let fillet = vec![
+        egui::pos2(trace_l.x, r.center().y - r.height() * 0.06),
+        egui::pos2(pad.x - rad * 0.5, r.center().y - rad * 0.9),
+        egui::pos2(pad.x - rad * 0.5, r.center().y + rad * 0.9),
+        egui::pos2(trace_l.x, r.center().y + r.height() * 0.06),
+    ];
+    painter.add(egui::Shape::closed_line(fillet, stroke));
+}
+
+/// Bridges: a rectangle outline broken by two small gaps (holding tabs).
+fn bridges(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
+    // Top edge with a gap.
+    painter.line_segment(
+        [egui::pos2(r.left(), r.top()), egui::pos2(r.center().x - r.width() * 0.12, r.top())],
+        stroke,
+    );
+    painter.line_segment(
+        [egui::pos2(r.center().x + r.width() * 0.12, r.top()), egui::pos2(r.right(), r.top())],
+        stroke,
+    );
+    // Bottom edge with a gap.
+    painter.line_segment(
+        [egui::pos2(r.left(), r.bottom()), egui::pos2(r.center().x - r.width() * 0.12, r.bottom())],
+        stroke,
+    );
+    painter.line_segment(
+        [egui::pos2(r.center().x + r.width() * 0.12, r.bottom()), egui::pos2(r.right(), r.bottom())],
+        stroke,
+    );
+    // Full side edges.
+    painter.line_segment([egui::pos2(r.left(), r.top()), egui::pos2(r.left(), r.bottom())], stroke);
+    painter.line_segment([egui::pos2(r.right(), r.top()), egui::pos2(r.right(), r.bottom())], stroke);
+}
+
+/// Scale-fit: a rectangle with diagonal resize arrows in opposite corners.
+fn scale_fit(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
+    rect_outline(painter, r, stroke);
+    let a = r.width() * 0.14;
+    // Top-left arrow pointing into the corner.
+    let tl = egui::pos2(r.left() + r.width() * 0.18, r.top() + r.height() * 0.18);
+    let tl_tip = egui::pos2(r.left() + r.width() * 0.04, r.top() + r.height() * 0.04);
+    painter.line_segment([tl, tl_tip], stroke);
+    painter.line_segment([tl_tip, egui::pos2(tl_tip.x + a, tl_tip.y)], stroke);
+    painter.line_segment([tl_tip, egui::pos2(tl_tip.x, tl_tip.y + a)], stroke);
+    // Bottom-right arrow pointing into the corner.
+    let br = egui::pos2(r.right() - r.width() * 0.18, r.bottom() - r.height() * 0.18);
+    let br_tip = egui::pos2(r.right() - r.width() * 0.04, r.bottom() - r.height() * 0.04);
+    painter.line_segment([br, br_tip], stroke);
+    painter.line_segment([br_tip, egui::pos2(br_tip.x - a, br_tip.y)], stroke);
+    painter.line_segment([br_tip, egui::pos2(br_tip.x, br_tip.y - a)], stroke);
 }
 
 /// Neutral fallback for unknown names: a (square) box outline.

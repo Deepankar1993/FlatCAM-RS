@@ -98,15 +98,48 @@ impl Theme {
         style.spacing.menu_margin = egui::Margin::same(6.0);
         style.spacing.window_margin = egui::Margin::same(8.0);
 
-        // Rounding: soften widget corners and windows.
-        let rounding = egui::Rounding::same(4.0);
+        // Rounding: soften widget corners and windows for a modern look.
+        let rounding = egui::Rounding::same(5.0);
         style.visuals.widgets.inactive.rounding = rounding;
         style.visuals.widgets.hovered.rounding = rounding;
         style.visuals.widgets.active.rounding = rounding;
         style.visuals.widgets.noninteractive.rounding = rounding;
         style.visuals.window_rounding = rounding;
+        style.visuals.menu_rounding = rounding;
+
+        // Modern accent: a single brand colour drives selection, links, and the
+        // hover/active tint, so tabs/toggles/sliders read as one coherent system.
+        let accent = self.accent();
+        style.visuals.selection.bg_fill = accent.gamma_multiply(0.45);
+        style.visuals.selection.stroke = egui::Stroke::new(1.0, accent);
+        style.visuals.hyperlink_color = accent;
+        // Subtle accent wash on hover/active backgrounds.
+        let wash = accent.gamma_multiply(if self == Theme::Dark { 0.30 } else { 0.18 });
+        style.visuals.widgets.hovered.weak_bg_fill = wash;
+        style.visuals.widgets.active.weak_bg_fill = accent.gamma_multiply(0.40);
+        style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, accent.gamma_multiply(0.6));
+
+        // Flat, modern panel/canvas tones distinct from the widget surfaces.
+        match self {
+            Theme::Light => {
+                style.visuals.panel_fill = egui::Color32::from_gray(246);
+                style.visuals.window_fill = egui::Color32::from_gray(250);
+            }
+            Theme::Dark => {
+                style.visuals.panel_fill = egui::Color32::from_gray(22);
+                style.visuals.window_fill = egui::Color32::from_gray(26);
+            }
+        }
 
         ctx.set_style(style);
+    }
+
+    /// The modern brand/accent colour for this theme (selection, links, hover).
+    fn accent(self) -> egui::Color32 {
+        match self {
+            Theme::Light => egui::Color32::from_rgb(56, 132, 232),
+            Theme::Dark => egui::Color32::from_rgb(96, 165, 250),
+        }
     }
 }
 

@@ -18,6 +18,7 @@ use fc_geo::MultiPolygon;
 use std::collections::HashMap;
 
 mod icons;
+mod plugins;
 mod theme;
 mod viewport;
 use theme::{Palette, Theme};
@@ -175,6 +176,15 @@ impl Default for CamParams {
     }
 }
 
+/// The left notebook tabs, mirroring stock FlatCAM (Project / Properties / Plugin).
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum LeftTab {
+    #[default]
+    Project,
+    Properties,
+    Plugin,
+}
+
 #[derive(Default)]
 struct FlatCamApp {
     project: Project,
@@ -197,6 +207,14 @@ struct FlatCamApp {
     grid_snap: bool,
     /// Status-bar units selector label ("mm" / "inch").
     units_label: String,
+    /// Active left-notebook tab.
+    left_tab: LeftTab,
+    /// The plugin currently shown in the Plugin tab (from the Plugins menu).
+    active_plugin: Option<plugins::PluginKind>,
+    /// Current parameter values for the active plugin (parallel to its ParamSpecs).
+    plugin_vals: Vec<f64>,
+    /// Last textual report produced by a plugin (shown in the Plugin tab).
+    plugin_report: String,
     // --- laser ---
     beam: fc_laser::BeamShape,
     /// Z-dependent astigmatic beam model; used when `use_astig` is set.
@@ -1008,6 +1026,207 @@ impl FlatCamApp {
         b
     }
 
+    /// Make `kind` the active plugin and switch to the Plugin tab.
+    fn activate_plugin(&mut self, kind: plugins::PluginKind) {
+        self.active_plugin = Some(kind);
+        self.plugin_vals = kind.params().iter().map(|p| p.default).collect();
+        self.plugin_report.clear();
+        self.left_tab = LeftTab::Plugin;
+        self.status = format!("Plugin: {}", kind.label());
+    }
+
+    /// Run the active plugin against the selected region and dispatch its output.
+    fn run_plugin(&mut self) {
+        let Some(kind) = self.active_plugin else { return };
+        let Some((geom, units, src)) = self.selected_region() else {
+            self.status = "Select a region object (Gerber/Geometry/SVG) first".into();
+            return;
+        };
+        match kind.apply(&geom, &self.plugin_vals) {
+            plugins::PluginOutput::Region(mp) => {
+                let keep = self.project.selected.clone();
+                self.add_object(&format!("{src}-{}", kind.label()), ObjectKind::Geometry, units, StoredGeom::Region(mp), Some(src.clone()), None);
+                self.project.selected = keep;
+                self.camera.initialized = false;
+                self.status = format!("{}: created geometry from {src}", kind.label());
+            }
+            plugins::PluginOutput::Paths(p) => {
+                let jp = fc_gcode::JobParams { units, ..Default::default() };
+                let job = fc_gcode::CncJob { params: jp, kind: fc_gcode::JobKind::Mill { paths: p.clone() } };
+                let pp = fc_gcode::dialects::by_name(&self.preproc).unwrap_or_else(|| Box::new(fc_gcode::Grbl));
+                let gcode = job.to_gcode(pp.as_ref());
+                self.last_gcode = Some(gcode.clone());
+                let keep = self.project.selected.clone();
+                let name = self.add_object(&format!("{src}-{}", kind.label()), ObjectKind::CncJob, units, StoredGeom::Cnc(p), Some(src.clone()), None);
+                if let Some(o) = self.store.get_mut(&name) {
+                    o.gcode = Some(gcode);
+                }
+                self.project.selected = keep;
+                self.status = format!("{}: created CNC job from {src}", kind.label());
+            }
+            plugins::PluginOutput::Report(s) => {
+                self.plugin_report = s;
+                self.status = format!("{}: report ready", kind.label());
+            }
+            plugins::PluginOutput::Message(s) => {
+                self.status = s;
+            }
+        }
+    }
+
+    /// Plugin tab: the active plugin's parameter form + Apply, or a hint.
+    fn draw_plugin_tab(&mut self, ui: &mut egui::Ui) {
+        let Some(kind) = self.active_plugin else {
+            ui.add_space(8.0);
+            ui.weak("No plugin active.");
+            ui.label("Pick a tool from the Plugins menu to configure and run it here.");
+            return;
+        };
+        ui.horizontal(|ui| {
+            let (r, _) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
+            icons::draw_tool_icon(kind.icon(), ui.painter(), r, ui.visuals().text_color());
+            ui.heading(kind.label());
+        });
+        ui.label(egui::RichText::new(kind.category()).small().weak());
+        ui.separator();
+        let specs = kind.params();
+        if self.plugin_vals.len() != specs.len() {
+            self.plugin_vals = specs.iter().map(|p| p.default).collect();
+        }
+        if specs.is_empty() {
+            ui.label("No parameters.");
+        }
+        for (i, spec) in specs.iter().enumerate() {
+            // Snap whole-number params (counts, axis/outside flags) to integer steps.
+            let is_int = spec.min.fract() == 0.0
+                && spec.max.fract() == 0.0
+                && spec.default.fract() == 0.0
+                && (spec.max - spec.min) <= 64.0;
+            let mut slider = egui::Slider::new(&mut self.plugin_vals[i], spec.min..=spec.max).text(spec.name);
+            if is_int {
+                slider = slider.step_by(1.0).integer();
+            }
+            ui.add(slider);
+        }
+        ui.add_space(4.0);
+        if ui.add(egui::Button::new(format!("Apply {}", kind.label()))).clicked() {
+            self.run_plugin();
+        }
+        if !self.plugin_report.is_empty() {
+            ui.separator();
+            egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+                ui.monospace(&self.plugin_report);
+            });
+        }
+    }
+
+    /// Properties tab: key/value properties of the selected object.
+    fn draw_properties_tab(&mut self, ui: &mut egui::Ui) {
+        if let Some(obj) = self.project.selected_object() {
+            for (k, v) in fc_app::properties(obj) {
+                ui.horizontal(|ui| {
+                    ui.strong(k);
+                    ui.label(v);
+                });
+            }
+        } else {
+            ui.add_space(8.0);
+            ui.weak("No selection.");
+            ui.label("Select an object in the Project tab to see its properties.");
+        }
+    }
+
+    /// Project tab: the object tree, CAM parameters, editor, and laser panel.
+    fn draw_project_tab(&mut self, ui: &mut egui::Ui) {
+        self.draw_tree(ui);
+        ui.separator();
+        ui.heading("Parameters");
+        ui.add(egui::Slider::new(&mut self.params.tool_dia, 0.05..=3.0).text("Tool Ø"));
+        ui.add(egui::Slider::new(&mut self.params.passes, 1..=8).text("Passes"));
+        ui.add(egui::Slider::new(&mut self.params.overlap, 0.0..=0.9).text("Overlap"));
+        ui.add(egui::Slider::new(&mut self.params.lead, 0.0..=5.0).text("Lead in/out"));
+        if self.preproc.is_empty() {
+            self.preproc = "grbl".into();
+        }
+        egui::ComboBox::from_id_salt("preproc")
+            .selected_text(self.preproc.clone())
+            .show_ui(ui, |ui| {
+                for name in ["grbl", "marlin", "default", "grbl_no_m6", "grbl_laser", "roland", "smoothie", "tinyg"] {
+                    ui.selectable_value(&mut self.preproc, name.to_string(), name);
+                }
+            });
+        ui.separator();
+        self.draw_editor_panel(ui);
+        ui.separator();
+        egui::CollapsingHeader::new("Laser (diode beam)").show(ui, |ui| {
+            ui.checkbox(&mut self.use_astig, "Astigmatic (Z-dependent)");
+            if self.use_astig {
+                ui.add(egui::Slider::new(&mut self.astig.waist_x, 0.02..=1.0).text("Waist X"));
+                ui.add(egui::Slider::new(&mut self.astig.waist_y, 0.02..=1.0).text("Waist Y"));
+                ui.add(egui::Slider::new(&mut self.astig.focus_x, -2.0..=2.0).text("Focus X (Z)"));
+                ui.add(egui::Slider::new(&mut self.astig.focus_y, -2.0..=2.0).text("Focus Y (Z)"));
+                ui.add(egui::Slider::new(&mut self.astig.rayleigh_x, 0.05..=3.0).text("Rayleigh X"));
+                ui.add(egui::Slider::new(&mut self.astig.rayleigh_y, 0.05..=3.0).text("Rayleigh Y"));
+                ui.add(egui::Slider::new(&mut self.astig.angle_deg, 0.0..=180.0).text("Mount angle"));
+                ui.add(egui::Slider::new(&mut self.focus_z, -2.0..=2.0).text("Focus Z"));
+                ui.horizontal(|ui| {
+                    if ui.button("Round-spot Z").clicked() {
+                        self.focus_z = self.astig.round_spot_z().unwrap_or_else(|| self.astig.best_focus());
+                    }
+                    if ui.button("Best-focus Z").clicked() {
+                        self.focus_z = self.astig.best_focus();
+                    }
+                });
+                let b = self.astig.at(self.focus_z);
+                ui.label(egui::RichText::new(format!("→ beam {:.3}×{:.3} @ {:.0}°", b.width_x, b.width_y, b.angle_deg)).small());
+            } else {
+                ui.add(egui::Slider::new(&mut self.beam.width_x, 0.02..=1.0).text("Beam X"));
+                ui.add(egui::Slider::new(&mut self.beam.width_y, 0.02..=1.0).text("Beam Y"));
+                ui.add(egui::Slider::new(&mut self.beam.angle_deg, 0.0..=180.0).text("Beam angle"));
+            }
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.laser_kerf, "Kerf comp");
+                ui.checkbox(&mut self.laser_dynamic, "M4 dyn");
+            });
+            self.draw_polar_plot(ui);
+            ui.horizontal(|ui| {
+                if ui.button("Laser Iso").clicked() {
+                    self.run_laser_iso();
+                }
+                if ui.button("Cross-hatch fill").clicked() {
+                    self.run_laser_fill();
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut self.sim_feed).speed(10.0).prefix("feed ").range(1.0..=20000.0));
+                ui.add(egui::DragValue::new(&mut self.sim_power).speed(0.01).prefix("power ").range(0.0..=1.0));
+            });
+            ui.horizontal(|ui| {
+                if ui.button("Optimize fill∠").clicked() {
+                    self.optimize_fill();
+                }
+                if ui.button("Burn preview").clicked() {
+                    let ctx = ui.ctx().clone();
+                    self.compute_burn(&ctx);
+                }
+            });
+            ui.checkbox(&mut self.show_burn, "Show burn");
+            if self.show_burn {
+                self.draw_burn_legend(ui);
+            }
+            egui::CollapsingHeader::new("Power curve (power,depth)").show(ui, |ui| {
+                ui.checkbox(&mut self.use_curve, "Apply curve to S values");
+                ui.add(egui::TextEdit::multiline(&mut self.curve_text).desired_rows(3).hint_text("0,0\n0.5,0.25\n1,1"));
+            });
+            egui::CollapsingHeader::new("Fit astig (z,width_x,width_y)").show(ui, |ui| {
+                ui.add(egui::TextEdit::multiline(&mut self.cal_text).desired_rows(3).hint_text("-0.2,0.12,0.07\n0,0.06,0.10\n0.2,0.11,0.06"));
+                if ui.button("Fit astig").clicked() {
+                    self.fit_astig_from_text();
+                }
+            });
+        });
+    }
+
     /// Draw the measurement grid, the red X/Y origin axes, an origin crosshair,
     /// and numeric ruler labels in left/bottom margin gutters (stock-FlatCAM
     /// style) — the CAD canvas backdrop.
@@ -1140,7 +1359,51 @@ impl eframe::App for FlatCamApp {
                     ui.radio_value(&mut self.theme, Theme::Light, "Light");
                     ui.radio_value(&mut self.theme, Theme::Dark, "Dark");
                 });
+                ui.menu_button("Options", |ui| {
+                    if ui.button("Flip / Mirror").clicked() {
+                        self.transform_selected("mirror");
+                        ui.close_menu();
+                    }
+                    if ui.button("Move to Origin").clicked() {
+                        self.transform_selected("origin");
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Tools Database…").clicked() {
+                        self.show_settings = true;
+                        ui.close_menu();
+                    }
+                });
+                ui.menu_button("Objects", |ui| {
+                    if ui.button("Deselect All").clicked() {
+                        self.project.selected = None;
+                        ui.close_menu();
+                    }
+                    if ui.button("Zoom Fit").clicked() {
+                        self.camera.initialized = false;
+                        ui.close_menu();
+                    }
+                });
                 ui.menu_button("Plugins", |ui| {
+                    // Grouped tool list, populated from the plugin registry.
+                    let mut cats: Vec<&'static str> = Vec::new();
+                    for k in plugins::PluginKind::all() {
+                        if !cats.contains(&k.category()) {
+                            cats.push(k.category());
+                        }
+                    }
+                    for cat in cats {
+                        ui.menu_button(cat, |ui| {
+                            for k in plugins::PluginKind::all().iter().filter(|k| k.category() == cat) {
+                                // Stub tools are listed for parity but disabled.
+                                if ui.add_enabled(!k.is_stub(), egui::Button::new(k.label())).clicked() {
+                                    self.activate_plugin(*k);
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                    }
+                    ui.separator();
                     if ui.button("G-code viewer").clicked() {
                         self.show_gcode = true;
                         ui.close_menu();
@@ -1234,112 +1497,22 @@ impl eframe::App for FlatCamApp {
             });
         });
 
-        egui::SidePanel::left("tree").resizable(true).default_width(240.0).show(ctx, |ui| {
-            ui.heading("Project");
-            self.draw_tree(ui);
-            ui.separator();
-            ui.heading("Parameters");
-            ui.add(egui::Slider::new(&mut self.params.tool_dia, 0.05..=3.0).text("Tool Ø"));
-            ui.add(egui::Slider::new(&mut self.params.passes, 1..=8).text("Passes"));
-            ui.add(egui::Slider::new(&mut self.params.overlap, 0.0..=0.9).text("Overlap"));
-            ui.add(egui::Slider::new(&mut self.params.lead, 0.0..=5.0).text("Lead in/out"));
-            if self.preproc.is_empty() {
-                self.preproc = "grbl".into();
-            }
-            egui::ComboBox::from_id_salt("preproc")
-                .selected_text(self.preproc.clone())
-                .show_ui(ui, |ui| {
-                    for name in ["grbl", "marlin", "default", "grbl_no_m6", "grbl_laser", "roland", "smoothie", "tinyg"] {
-                        ui.selectable_value(&mut self.preproc, name.to_string(), name);
-                    }
-                });
-            ui.separator();
-            self.draw_editor_panel(ui);
-            ui.separator();
-            egui::CollapsingHeader::new("Laser (diode beam)").show(ui, |ui| {
-                ui.checkbox(&mut self.use_astig, "Astigmatic (Z-dependent)");
-                if self.use_astig {
-                    ui.add(egui::Slider::new(&mut self.astig.waist_x, 0.02..=1.0).text("Waist X"));
-                    ui.add(egui::Slider::new(&mut self.astig.waist_y, 0.02..=1.0).text("Waist Y"));
-                    ui.add(egui::Slider::new(&mut self.astig.focus_x, -2.0..=2.0).text("Focus X (Z)"));
-                    ui.add(egui::Slider::new(&mut self.astig.focus_y, -2.0..=2.0).text("Focus Y (Z)"));
-                    ui.add(egui::Slider::new(&mut self.astig.rayleigh_x, 0.05..=3.0).text("Rayleigh X"));
-                    ui.add(egui::Slider::new(&mut self.astig.rayleigh_y, 0.05..=3.0).text("Rayleigh Y"));
-                    ui.add(egui::Slider::new(&mut self.astig.angle_deg, 0.0..=180.0).text("Mount angle"));
-                    ui.add(egui::Slider::new(&mut self.focus_z, -2.0..=2.0).text("Focus Z"));
-                    ui.horizontal(|ui| {
-                        if ui.button("Round-spot Z").clicked() {
-                            self.focus_z = self.astig.round_spot_z().unwrap_or_else(|| self.astig.best_focus());
-                        }
-                        if ui.button("Best-focus Z").clicked() {
-                            self.focus_z = self.astig.best_focus();
-                        }
-                    });
-                    let b = self.astig.at(self.focus_z);
-                    ui.label(egui::RichText::new(format!("→ beam {:.3}×{:.3} @ {:.0}°", b.width_x, b.width_y, b.angle_deg)).small());
-                } else {
-                    ui.add(egui::Slider::new(&mut self.beam.width_x, 0.02..=1.0).text("Beam X"));
-                    ui.add(egui::Slider::new(&mut self.beam.width_y, 0.02..=1.0).text("Beam Y"));
-                    ui.add(egui::Slider::new(&mut self.beam.angle_deg, 0.0..=180.0).text("Beam angle"));
-                }
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut self.laser_kerf, "Kerf comp");
-                    ui.checkbox(&mut self.laser_dynamic, "M4 dyn");
-                });
-                // Directional anisotropy at a glance.
-                self.draw_polar_plot(ui);
-                ui.horizontal(|ui| {
-                    if ui.button("Laser Iso").clicked() {
-                        self.run_laser_iso();
-                    }
-                    if ui.button("Cross-hatch fill").clicked() {
-                        self.run_laser_fill();
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.add(egui::DragValue::new(&mut self.sim_feed).speed(10.0).prefix("feed ").range(1.0..=20000.0));
-                    ui.add(egui::DragValue::new(&mut self.sim_power).speed(0.01).prefix("power ").range(0.0..=1.0));
-                });
-                ui.horizontal(|ui| {
-                    if ui.button("Optimize fill∠").clicked() {
-                        self.optimize_fill();
-                    }
-                    if ui.button("Burn preview").clicked() {
-                        let ctx = ui.ctx().clone();
-                        self.compute_burn(&ctx);
-                    }
-                });
-                ui.checkbox(&mut self.show_burn, "Show burn");
-                if self.show_burn {
-                    self.draw_burn_legend(ui);
-                }
-                // Measured power curve (visually-uniform burn).
-                egui::CollapsingHeader::new("Power curve (power,depth)").show(ui, |ui| {
-                    ui.checkbox(&mut self.use_curve, "Apply curve to S values");
-                    ui.add(egui::TextEdit::multiline(&mut self.curve_text).desired_rows(3).hint_text("0,0\n0.5,0.25\n1,1"));
-                });
-                // Astig fit from a pasted focus-ramp kerf table.
-                egui::CollapsingHeader::new("Fit astig (z,width_x,width_y)").show(ui, |ui| {
-                    ui.add(egui::TextEdit::multiline(&mut self.cal_text).desired_rows(3).hint_text("-0.2,0.12,0.07\n0,0.06,0.10\n0.2,0.11,0.06"));
-                    if ui.button("Fit astig").clicked() {
-                        self.fit_astig_from_text();
-                    }
-                });
+        // --- left notebook: Project / Properties / Plugin (stock-FlatCAM layout) ---
+        egui::SidePanel::left("notebook").resizable(true).default_width(260.0).show(ctx, |ui| {
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.left_tab, LeftTab::Project, "Project");
+                ui.selectable_value(&mut self.left_tab, LeftTab::Properties, "Properties");
+                ui.selectable_value(&mut self.left_tab, LeftTab::Plugin, "Plugin");
             });
-        });
-
-        egui::SidePanel::right("props").resizable(true).default_width(220.0).show(ctx, |ui| {
-            ui.heading("Properties");
-            if let Some(obj) = self.project.selected_object() {
-                for (k, v) in fc_app::properties(obj) {
-                    ui.horizontal(|ui| {
-                        ui.strong(k);
-                        ui.label(v);
-                    });
+            ui.separator();
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                match self.left_tab {
+                    LeftTab::Project => self.draw_project_tab(ui),
+                    LeftTab::Properties => self.draw_properties_tab(ui),
+                    LeftTab::Plugin => self.draw_plugin_tab(ui),
                 }
-            } else {
-                ui.label("No selection");
-            }
+            });
         });
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
