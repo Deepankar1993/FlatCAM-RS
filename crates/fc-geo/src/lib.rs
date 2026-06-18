@@ -149,12 +149,29 @@ pub fn buffer_path(pts: &[Coord<f64>], radius: f64, steps: usize) -> MultiPolygo
 /// Union a collection of polygons into a single (multi)polygon. Mirrors
 /// Shapely's `unary_union` over a list of polygons.
 pub fn union_all(polys: Vec<Polygon<f64>>) -> MultiPolygon<f64> {
-    let mut acc = MultiPolygon::new(vec![]);
-    for p in polys {
-        let single = MultiPolygon::new(vec![p]);
-        acc = acc.union(&single);
+    if polys.is_empty() {
+        return MultiPolygon::new(vec![]);
     }
-    acc
+    // Balanced (divide-and-conquer) union. Folding one polygon at a time
+    // (`acc = acc.union(p)`) re-processes the whole growing accumulator on every
+    // step — O(n²) boolean ops, which made dense layers like silkscreen text
+    // (thousands of strokes) take ~8 s to parse. Pairwise-merging in a balanced
+    // tree does O(n log n) ops on similarly-sized operands. Union is
+    // associative, so the result is identical.
+    let mut layer: Vec<MultiPolygon<f64>> =
+        polys.into_iter().map(|p| MultiPolygon::new(vec![p])).collect();
+    while layer.len() > 1 {
+        let mut next = Vec::with_capacity(layer.len().div_ceil(2));
+        let mut it = layer.into_iter();
+        while let Some(a) = it.next() {
+            match it.next() {
+                Some(b) => next.push(a.union(&b)),
+                None => next.push(a),
+            }
+        }
+        layer = next;
+    }
+    layer.pop().unwrap_or_else(|| MultiPolygon::new(vec![]))
 }
 
 /// Union two multipolygons (Shapely `a.union(b)`).
