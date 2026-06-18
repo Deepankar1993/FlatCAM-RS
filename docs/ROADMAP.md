@@ -68,7 +68,7 @@ Group B/C tools — moderate compute, no new subsystems.
 | ✅ SVG | `ParseSVG` | — | `fc-svg` (roxmltree + path/bezier flattening); GUI+CLI load |
 | ⬜ Font → glyph polygons | `ParseFont` | MED | `ttf-parser` + outline flattening |
 | ✅ HPGL2 | `ParseHPGL2` | — | `fc-hpgl` (IN/SP/PU/PD/PA/PR, abs+rel) |
-| ⬜ DXF (+ splines) | `ParseDXF` | HIGH | `dxf` crate; spline tessellation |
+| ✅ DXF | `ParseDXF` | — | `fc-dxf` (`dxf` 0.6: Line/Circle/Arc/LwPolyline/Polyline); CLI loads .dxf. Splines/bulge pending |
 | ⬜ PDF vector extract | `ParsePDF` | HIGH | `pdfium-render` / `lopdf` (lowest priority) |
 
 ## Phase 5 — Preprocessor coverage ⬜

@@ -1,0 +1,10 @@
+[package]
+name = "fc-dxf"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+fc-geo = { path = "../fc-geo" }
+geo.workspace = true
+dxf = "0.6"
+thiserror.workspace = true

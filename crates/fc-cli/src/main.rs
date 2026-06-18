@@ -281,9 +281,13 @@ fn cmd_cutout(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
 /// SVG has no document units, so it is treated as millimetres.
 fn load_geometry(path: &str) -> Result<(geo::MultiPolygon<f64>, Units)> {
     let text = read(path)?;
-    if path.to_lowercase().ends_with(".svg") {
+    let lower = path.to_lowercase();
+    if lower.ends_with(".svg") {
         let svg = fc_svg::parse(&text)?;
         Ok((svg.polygons, Units::Mm))
+    } else if lower.ends_with(".dxf") {
+        let dxf = fc_dxf::parse(&text)?;
+        Ok((dxf.polygons, Units::Mm))
     } else {
         let g = fc_gerber::parse(&text)?;
         let units = match g.units {

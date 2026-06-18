@@ -2,6 +2,19 @@
 
 All notable changes to the Rust port are recorded here.
 
+## [0.11.0] — Phase 4: DXF import
+
+### Added
+- **`fc-dxf`** (new crate) — DXF → geometry importer built on the verified
+  `dxf` 0.6 API: LINE, CIRCLE, ARC (flattened), LWPOLYLINE, POLYLINE (closed →
+  polygon, open → polyline). Bulge/splines are a documented v1 limitation. (3 tests)
+- **CLI**: `iso`/`paint`/`ncc`/`cutout` now also accept `.dxf` input.
+
+### Verified
+- The `dxf` crate API was confirmed against the crate's generated source before
+  implementation (Drawing::load, EntityType variants, struct fields).
+- `cargo test --workspace`: 240 passed, 0 warnings. 11 crates.
+
 ## [0.10.1] — SVG → toolpath pipeline
 
 ### Added

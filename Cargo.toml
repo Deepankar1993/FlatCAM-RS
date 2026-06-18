@@ -11,8 +11,9 @@ members = [
     "crates/fc-svg",
     "crates/fc-app",
     "crates/fc-hpgl",
+    "crates/fc-dxf",
 ]
-exclude = ["_nettest"]
+exclude = ["_nettest", "_dxfprobe"]
 
 [workspace.package]
 version = "0.1.0"
