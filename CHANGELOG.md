@@ -2,6 +2,25 @@
 
 All notable changes to the Rust port are recorded here.
 
+## [0.25.0] — astigmatic Z-beam model + calibration grids
+
+### Added — `fc-laser`
+- **`astig::AstigmaticBeam`** — Z-dependent beam (Gaussian propagation per axis:
+  `W(z)=W0·√(1+((z−z_f)/z_R)²)`); `at(z) -> BeamShape`, `round_spot_z`,
+  `best_focus`. Models the two axes focusing at different Z (astigmatism).
+- **`calibration`** — G-code test grids: `direction_fan` (orientation/aspect),
+  `power_feed_grid` (power/depth curve), `focus_ramp` (per-axis focus + round-spot
+  Z, stepping Z with H/V crosses).
+- **CLI `laser-cal --cal direction|power|focus`** (+ `--z-start/--z-end/--z-steps`,
+  `--feed/--power/--mark-len/--spacing/--angles`).
+- **`docs/LASER_NOTES.md`** — full model, compensation math, **calibration
+  procedure**, status, and a next-session TODO (wire astig→ops, fit helper,
+  power-curve LUT, cross-hatch, banding/overscan).
+
+### Verified
+- `cargo test --workspace`: 517 passed, 0 warnings. `laser-cal` grids generated
+  (focus ramp steps Z + cuts crosses; direction fan emits angled marks).
+
 ## [0.24.0] — GUI laser plugin (beam panel + burn-heatmap preview)
 
 ### Added (GUI)

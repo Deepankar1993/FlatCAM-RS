@@ -23,3 +23,7 @@ pub mod emit;
 pub use emit::{compensate_power, laser_gcode};
 pub mod cam;
 pub use cam::laser_isolation;
+pub mod astig;
+pub use astig::AstigmaticBeam;
+pub mod calibration;
+pub use calibration::CalParams;

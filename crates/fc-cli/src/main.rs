@@ -56,6 +56,7 @@ fn run() -> Result<()> {
         "ncc" => cmd_ncc(&positional, &opts),
         "cutout" => cmd_cutout(&positional, &opts),
         "laser-iso" => cmd_laser_iso(&positional, &opts),
+        "laser-cal" => cmd_laser_cal(&opts),
         "script" => cmd_script(&positional),
         "-h" | "--help" | "help" => {
             print_usage();
@@ -77,6 +78,7 @@ fn print_usage() {
          \x20 cutout <gerber>      mill the board outline with holding tabs\n\
          \x20 laser-iso <file>     isolation with diode beam-shape compensation\n\
          \x20                      (--beam-x --beam-y --beam-angle [--no-kerf] [--no-dynamic])\n\
+         \x20 laser-cal            emit a calibration grid (--cal direction|power|focus)\n\
          \x20 drill  <excellon>    drill an Excellon file to G-code\n\
          \x20 script <file>        run a batch script (see fc-script commands)\n\
          \n\
@@ -352,6 +354,38 @@ fn cmd_laser_iso(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
         beam.width_x, beam.width_y, beam.angle_deg, passes.max(1), compensate_kerf,
         paths.len(), if dynamic { "M4 dynamic" } else { "M3" }, jp.spindle_rpm
     );
+    write_output(opts, &gcode)
+}
+
+fn cmd_laser_cal(opts: &HashMap<String, String>) -> Result<()> {
+    let p = fc_laser::CalParams {
+        feed: getf(opts, "feed", 600.0),
+        power_max: getf(opts, "power", 1000.0),
+        mark_len: getf(opts, "mark-len", 5.0),
+        spacing: getf(opts, "spacing", 3.0),
+        travel_z: getf(opts, "travel-z", 5.0),
+        dynamic: !opts.contains_key("no-dynamic"),
+    };
+    let origin = (getf(opts, "x", 0.0), getf(opts, "y", 0.0));
+    let kind = opts.get("cal").map(|s| s.as_str()).unwrap_or("direction");
+    let gcode = match kind {
+        "direction" => fc_laser::calibration::direction_fan(origin, getf(opts, "angles", 12.0) as usize, &p),
+        "power" => fc_laser::calibration::power_feed_grid(
+            origin,
+            &[0.2, 0.4, 0.6, 0.8, 1.0],
+            &[300.0, 600.0, 900.0, 1200.0],
+            &p,
+        ),
+        "focus" => {
+            let z0 = getf(opts, "z-start", -0.3);
+            let z1 = getf(opts, "z-end", 0.3);
+            let n = (getf(opts, "z-steps", 7.0) as usize).max(2);
+            let zs: Vec<f64> = (0..n).map(|i| z0 + (z1 - z0) * (i as f64) / ((n - 1) as f64)).collect();
+            fc_laser::calibration::focus_ramp(origin, &zs, &p)
+        }
+        other => bail!("laser-cal: unknown --cal '{other}' (use: direction | power | focus)"),
+    };
+    eprintln!("laser-cal: {kind} grid generated");
     write_output(opts, &gcode)
 }
 
