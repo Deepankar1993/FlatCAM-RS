@@ -2,6 +2,21 @@
 
 All notable changes to the Rust port are recorded here.
 
+## [0.6.0] — Phase 3: utilities batch + GUI export
+
+### Added
+- **`fc-cam`** modules (6, agent-authored in parallel): `calculators` (V-bit
+  width/depth, unit conversion, electroplating time), `film` (negative export),
+  `align` (2-point similarity transform), `distance` (point + geometry distance),
+  `optimal` (minimum feature spacing), `report` (object statistics).
+- **GUI**: G-code export via save dialog + preprocessor selector combo box.
+
+### Changed
+- `distance`/`optimal` use the non-deprecated `geo::Euclidean::distance`.
+
+### Verified
+- `cargo test --workspace`: 113 passed, 0 warnings.
+
 ## [0.5.0] — Phase 7 start: desktop GUI scaffold
 
 ### Added

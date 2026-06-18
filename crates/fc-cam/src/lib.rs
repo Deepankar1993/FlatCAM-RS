@@ -40,6 +40,16 @@ pub mod rulescheck;
 pub use rulescheck::{check_clearance, min_clearance_ok, Violation};
 pub mod levelling;
 pub use levelling::{probe_grid, probe_job};
+pub mod calculators;
+pub mod film;
+pub mod align;
+pub mod distance;
+pub mod optimal;
+pub mod report;
+pub use align::{apply_align, compute_align, AlignTransform};
+pub use distance::{geometry_distance, point_distance};
+pub use optimal::minimum_spacing;
+pub use report::{report, GeoReport};
 
 /// Parameters for isolation routing.
 #[derive(Clone, Debug)]

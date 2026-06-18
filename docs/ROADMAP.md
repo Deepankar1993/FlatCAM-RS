@@ -50,11 +50,16 @@ Group B/C tools — moderate compute, no new subsystems.
 - ✅ Invert Gerber — `fc-cam::invert`
 - ✅ Fiducials / markers — `fc-cam::fiducials`
 - ✅ Drill path optimization (nearest-neighbor) — `fc-cam::drilloptim`
-- ⬜ Film / negative export — `ToolFilm`
+- ✅ Film / negative export — `fc-cam::film`
+- ✅ Align objects (2-point similarity) — `fc-cam::align`
+- ✅ Distance / object-distance — `fc-cam::distance`
+- ✅ Optimal (min feature spacing) — `fc-cam::optimal`
+- ✅ Calculators (V-bit, units, plating) — `fc-cam::calculators`
+- ✅ Report (object statistics) — `fc-cam::report`
 - ✅ Rules check (DRC, min-clearance) — `fc-cam::rulescheck`
 - ✅ Bed levelling probe grid — `fc-cam::levelling`
 - ✅ Solder-paste dispense paths — `fc-cam::solderpaste`
-- ⬜ Calculators, distance, optimal, QR code — small utilities
+- ⬜ QR code — needs a `qrcode` dependency (deferred)
 
 ## Phase 4 — Additional parsers ⬜
 
