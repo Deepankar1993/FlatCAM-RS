@@ -13,4 +13,7 @@ fc-gerber = { path = "../fc-gerber" }
 fc-excellon = { path = "../fc-excellon" }
 fc-gcode = { path = "../fc-gcode" }
 fc-cam = { path = "../fc-cam" }
+fc-svg = { path = "../fc-svg" }
+fc-hpgl = { path = "../fc-hpgl" }
+geo.workspace = true
 anyhow.workspace = true

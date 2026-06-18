@@ -142,16 +142,25 @@ fn ring_coords(ls: &geo::LineString<f64>) -> Polyline {
 /// `tool_radius + i * tool_diameter * (1 - overlap)`, then takes the boundary
 /// of the result as the cut path — matching FlatCAM's offset-based isolation.
 pub fn isolation(gerber: &Gerber, params: &IsolationParams) -> CncJob {
+    isolation_geo(&gerber.solid_geometry, map_units(gerber.units), params)
+}
+
+/// Geometry-based isolation: works on any region (Gerber copper, SVG art, …).
+pub fn isolation_geo(
+    geometry: &MultiPolygon<f64>,
+    units: Units,
+    params: &IsolationParams,
+) -> CncJob {
     let r = params.tool_diameter / 2.0;
     let step = params.tool_diameter * (1.0 - params.overlap.clamp(0.0, 0.999));
     let mut paths: Vec<Polyline> = Vec::new();
     for i in 0..params.passes.max(1) {
         let dist = r + (i as f64) * step;
-        let grown = offset(&gerber.solid_geometry, dist);
+        let grown = offset(geometry, dist);
         paths.extend(rings_to_polylines(&grown));
     }
     let mut job = params.job.clone();
-    job.units = map_units(gerber.units);
+    job.units = units;
     job.tool_diameter = params.tool_diameter;
     CncJob {
         params: job,

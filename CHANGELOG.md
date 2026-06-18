@@ -2,6 +2,14 @@
 
 All notable changes to the Rust port are recorded here.
 
+## [0.10.1] — SVG → toolpath pipeline
+
+### Added
+- **`fc-cam::isolation_geo`** — geometry-based isolation (works on any region,
+  not just a parsed Gerber).
+- **CLI**: `iso` / `paint` / `ncc` / `cutout` now accept `.svg` input (SVG art
+  treated as the region, mm units), enabling engrave/route of SVG logos.
+
 ## [0.10.0] — Second big parallel batch: writers + 8 more features
 
 Authored by 10 agents concurrently (~74 s), integrated with one `mut` cleanup.

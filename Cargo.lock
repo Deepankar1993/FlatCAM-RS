@@ -1209,6 +1209,9 @@ dependencies = [
  "fc-gcode",
  "fc-geo",
  "fc-gerber",
+ "fc-hpgl",
+ "fc-svg",
+ "geo 0.29.3",
 ]
 
 [[package]]

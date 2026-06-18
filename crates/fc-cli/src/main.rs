@@ -172,20 +172,15 @@ fn cmd_info(pos: &[String]) -> Result<()> {
 }
 
 fn cmd_iso(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
-    let path = pos.first().context("iso: expected a gerber path")?;
-    let text = read(path)?;
-    let g = fc_gerber::parse(&text)?;
-    let units = match g.units {
-        fc_gerber::Units::Mm => Units::Mm,
-        fc_gerber::Units::Inch => Units::Inch,
-    };
+    let path = pos.first().context("iso: expected a gerber or svg path")?;
+    let (geom, units) = load_geometry(path)?;
     let params = fc_cam::IsolationParams {
         tool_diameter: getf(opts, "tool-dia", 0.1),
         passes: getf(opts, "passes", 1.0) as usize,
         overlap: getf(opts, "overlap", 0.0),
         job: job_params_from_opts(opts, units),
     };
-    let job = fc_cam::isolation(&g, &params);
+    let job = fc_cam::isolation_geo(&geom, units, &params);
     let pp = preproc_from_opts(opts);
     let gcode = job.to_gcode(pp.as_ref());
     eprintln!(
@@ -217,13 +212,8 @@ fn cmd_drill(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
 }
 
 fn cmd_paint(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
-    let path = pos.first().context("paint: expected a gerber path")?;
-    let text = read(path)?;
-    let g = fc_gerber::parse(&text)?;
-    let units = match g.units {
-        fc_gerber::Units::Mm => Units::Mm,
-        fc_gerber::Units::Inch => Units::Inch,
-    };
+    let path = pos.first().context("paint: expected a gerber or svg path")?;
+    let (geom, units) = load_geometry(path)?;
     let params = fc_cam::PaintParams {
         tool_diameter: getf(opts, "tool-dia", 0.5),
         overlap: getf(opts, "overlap", 0.2),
@@ -231,7 +221,7 @@ fn cmd_paint(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
         add_contour: opts.get("no-contour").is_none(),
         job: job_params_from_opts(opts, units),
     };
-    let job = fc_cam::paint_job(&g.solid_geometry, &params, units);
+    let job = fc_cam::paint_job(&geom, &params, units);
     let pp = preproc_from_opts(opts);
     let gcode = job.to_gcode(pp.as_ref());
     let passes = match &job.kind {
@@ -250,15 +240,14 @@ fn cmd_paint(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
 
 fn cmd_ncc(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
     let path = pos.first().context("ncc: expected a gerber path")?;
-    let g = fc_gerber::parse(&read(path)?)?;
-    let units = gerber_units(&g);
+    let (geom, units) = load_geometry(path)?;
     let params = fc_cam::NccParams {
         tool_diameter: getf(opts, "tool-dia", 0.5),
         overlap: getf(opts, "overlap", 0.4),
         boundary_margin: getf(opts, "margin", 1.0),
         job: job_params_from_opts(opts, units),
     };
-    let job = fc_cam::ncc_job(&g.solid_geometry, &params, units);
+    let job = fc_cam::ncc_job(&geom, &params, units);
     let pp = preproc_from_opts(opts);
     let gcode = job.to_gcode(pp.as_ref());
     eprintln!("ncc: clear non-copper, tool {:.3}, preproc {}", params.tool_diameter, pp.name());
@@ -266,9 +255,8 @@ fn cmd_ncc(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
 }
 
 fn cmd_cutout(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
-    let path = pos.first().context("cutout: expected a gerber path")?;
-    let g = fc_gerber::parse(&read(path)?)?;
-    let units = gerber_units(&g);
+    let path = pos.first().context("cutout: expected a gerber or svg path")?;
+    let (geom, units) = load_geometry(path)?;
     let params = fc_cam::CutoutParams {
         tool_diameter: getf(opts, "tool-dia", 1.0),
         tabs: getf(opts, "tabs", 4.0) as usize,
@@ -276,8 +264,8 @@ fn cmd_cutout(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
         outside: opts.get("on-line").is_none(),
         job: job_params_from_opts(opts, units),
     };
-    // Use the Gerber's bounding box as the board outline.
-    let (minx, miny, maxx, maxy) = g.bounds().context("cutout: empty gerber")?;
+    // Use the geometry's bounding box as the board outline.
+    let (minx, miny, maxx, maxy) = geo_bounds(&geom).context("cutout: empty geometry")?;
     let paths = fc_cam::cutout_rectangular(minx, miny, maxx, maxy, &params);
     let mut jp = params.job.clone();
     jp.units = units;
@@ -289,11 +277,27 @@ fn cmd_cutout(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
     write_output(opts, &gcode)
 }
 
-fn gerber_units(g: &fc_gerber::Gerber) -> Units {
-    match g.units {
-        fc_gerber::Units::Mm => Units::Mm,
-        fc_gerber::Units::Inch => Units::Inch,
+/// Load a 2-D region from a Gerber or SVG file (the geometry CAM ops act on).
+/// SVG has no document units, so it is treated as millimetres.
+fn load_geometry(path: &str) -> Result<(geo::MultiPolygon<f64>, Units)> {
+    let text = read(path)?;
+    if path.to_lowercase().ends_with(".svg") {
+        let svg = fc_svg::parse(&text)?;
+        Ok((svg.polygons, Units::Mm))
+    } else {
+        let g = fc_gerber::parse(&text)?;
+        let units = match g.units {
+            fc_gerber::Units::Mm => Units::Mm,
+            fc_gerber::Units::Inch => Units::Inch,
+        };
+        Ok((g.solid_geometry, units))
     }
+}
+
+fn geo_bounds(mp: &geo::MultiPolygon<f64>) -> Option<(f64, f64, f64, f64)> {
+    use geo::BoundingRect;
+    mp.bounding_rect()
+        .map(|r| (r.min().x, r.min().y, r.max().x, r.max().y))
 }
 
 enum FileKind {
