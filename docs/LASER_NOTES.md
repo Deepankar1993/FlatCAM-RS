@@ -65,19 +65,32 @@ spot's aspect — and which axis is wider — changes with Z. There is generally
 | `banding` | `scan_offset_distance(feed,latency)`, `apply_scan_offset`, `compensate_banding`, `overscan` | timing (not shape) comp: bidirectional latency position-offset + raster overscan |
 | `densify` | `densify_rings(geom,max_seg)`, `densify_for_beam(geom,&beam,frac)` | ring densification pre-pass to fix arc-chord stretch under the affine elliptical offset |
 | `polar` | `PolarSample`; `polar_samples`, `polar_kerf_points`, `polar_power_points`, `polar_extents` | GUI-free polar-plot data (kerf/power-factor vs travel angle) |
+| `emit_curve` | `compensate_power_curve(paths,&beam,&PowerCurve)`, `recompensate_with_curve(annotated,&PowerCurve)` | composes the directional factor with the calibrated power curve for *visually*-uniform S |
+| `fill` | `laser_fill_paths(region,&beam,spacing,angles)`, `laser_fill_for_beam`, `laser_fill_gcode` | cross-hatch area-fill as a full op (hatch → power comp → G-code) |
+| `raster` | `raster_scan(region,spacing,angle)`, `raster_fill_banded(region,spacing,angle,feed,latency,overscan)` | boustrophedon raster + banding/overscan timing comp |
+| `calcsv` | `parse_kerf_csv`, `parse_power_csv`, `kerf_to_csv` | lenient CSV/whitespace parsing of measured calibration tables (no file I/O) |
 
 CLI: `flatcam-rs laser-iso <file> --beam-x --beam-y --beam-angle [--no-kerf] [--no-dynamic]`;
 astigmatic mode (auto-detected when any `--astig-*` is passed):
 `--astig-waist-x/-y --astig-focus-x/-y --astig-rayleigh-x/-y --z <focusZ>`
 (omit `--z` → uses the model's round-spot Z, falling back to best-focus).
+`laser-iso` also accepts `[--densify[=frac]]` (arc-chord fidelity pre-pass) and
+`[--power-curve <csv>]` (measured power→depth correction).
+`flatcam-rs laser-fill <file> [--spacing --angles a,b --overlap | --raster --angle
+--feed --latency --overscan] [--power-curve <csv>]` — cross-hatch / bidirectional
+raster area-fill with beam comp.
+`flatcam-rs laser-fit <kerf.csv> [--beam-angle]` — fit the astigmatic model from a
+measured `z,width_x,width_y` focus-ramp table and print the parameters.
 And `flatcam-rs laser-cal --cal direction|power|focus [-o out.ngc] [--feed --power --mark-len --spacing --travel-z --angles --z-start --z-end --z-steps]`.
 
 GUI: Laser panel — flat beam **or** astigmatic editor (waist/focus/rayleigh per
 axis + mount angle), a **Focus-Z** slider with **Round-spot Z / Best-focus Z**
 buttons (shows the resolved beam dims), kerf + M4 toggles, a **polar plot** of
-kerf/power-factor vs travel angle, a **simulate feed/power** picker feeding the
-optimiser + burn sim, Laser-Iso, Optimize fill∠, Burn-preview heatmap overlay
-with a legend strip.
+kerf/power-factor/**dwell** vs travel angle, a **simulate feed/power** picker
+feeding the optimiser + burn sim, **Laser-Iso** + **Cross-hatch fill** buttons,
+Optimize fill∠, Burn-preview heatmap overlay with a legend strip, a **Power curve**
+entry (`power,depth`) with an "apply to S" toggle, and a **Fit astig** form that
+parses a pasted `z,width_x,width_y` table and populates the astig editor.
 
 ## Calibration procedure (how to fit the model)
 
@@ -104,7 +117,7 @@ Run on scrap of the target material at a fixed, known focus unless noted.
 Then `AstigmaticBeam{..}.at(z)` gives the `BeamShape` to use at any chosen focus,
 and `round_spot_z()` / `best_focus()` suggest good operating heights.
 
-## Status (implemented, 72 fc-laser tests, all green; workspace 555 tests)
+## Status (implemented, 93 fc-laser tests, all green; workspace 576 tests)
 
 - ✅ Flat `BeamShape` + directional kerf/power model (research-corrected formula).
 - ✅ Anisotropic elliptical offset (affine trick).
@@ -126,31 +139,33 @@ and `round_spot_z()` / `best_focus()` suggest good operating heights.
   user-set simulate feed/power (TODO 6).
 - ✅ **`densify`** — ring densification pre-pass for arc-chord fidelity under the
   affine offset (TODO 7).
+- ✅ **`powercurve` applied in the emission path** (`emit_curve`): CLI
+  `laser-iso/laser-fill --power-curve <csv>`; GUI "Power curve" entry + toggle.
+- ✅ **Cross-hatch surfaced as an op** (`fill`): CLI `laser-fill`; GUI "Cross-hatch
+  fill" button.
+- ✅ **Auto-densify** (`densify`): CLI `laser-iso --densify[=frac]`.
+- ✅ **Banding wired into a raster generator** (`raster`): CLI `laser-fill --raster`
+  applies `overscan` + `compensate_banding`.
+- ✅ **`calfit` data entry** (`calcsv`): CLI `laser-fit <csv>`; GUI "Fit astig" form.
+- ✅ **Polar-plot dwell overlay** added (kerf + power + dwell curves).
 - ✅ Validated on the real KiCad SmartPowerMonitor B_Cu (0.10×0.06 beam → S1000
   vertical, ~S600 horizontal, 148 distinct direction-dependent S values).
 
-## Next session — TODO (follow-ups for the new modules)
+## Next session — TODO (nice-to-haves only; the model + ops are complete)
 
-The seven items from the prior session are all implemented (see Status). The
-modules exist, are unit-tested, and astigmatism + the GUI ergonomics are fully
-wired. Remaining *integration* polish:
+All prior items are implemented and wired across CLI + GUI. What's left is minor
+polish, not missing capability:
 
-1. **Apply `powercurve` in the emission path.** `compensate_power` /
-   `laser_gcode` currently use the fluence-uniform `power_factor`. Thread an
-   optional `&PowerCurve` through so the per-segment `S` is `visual_factor`-
-   corrected; surface a "measured power curve" entry form in CLI/GUI (CSV / grid).
-2. **Surface `crosshatch` as an operation.** Add a `laser-fill` CLI verb + a GUI
-   button that runs `crosshatch_for_beam` and emits laser G-code; let the
-   optimizer choose the pair of angles.
-3. **Auto-densify before the offset.** Optionally call `densify_for_beam` inside
-   `laser_isolation` (or expose a `--densify` flag) for high-aspect beams, so the
-   affine arc-chord stretch is corrected by default.
-4. **Wire `banding` into the laser path.** Apply `compensate_banding` + `overscan`
-   when emitting bidirectional raster fills (needs a raster/scan generator first).
-5. **`calfit` data entry.** GUI form / CLI CSV reader to feed `KerfMeasurement`s
-   into `fit_astig` and populate the astig editor from a real focus-ramp measurement.
-6. **Polar-plot polish.** Optional numeric ticks / angle labels on the GUI polar
-   plot; overlay the dwell curve.
+1. **Connected raster path.** `raster_scan` returns per-line segments; optionally
+   join them into one continuous boustrophedon polyline (with travel moves) for a
+   single laser-on stream, and expose a GUI raster-fill button with banding inputs.
+2. **Polar-plot ticks.** Numeric radial/angle labels on the GUI polar plot.
+3. **Power-curve from the `power` grid image.** Today the curve is entered as
+   `power,depth` samples; a helper to derive it from a scanned/measured grid would
+   close the calibration loop end-to-end.
+4. **Real-material validation** of the astig fit + power curve against an actual
+   diode engraver (the model is unit-tested and round-trip-verified, not yet
+   bench-calibrated on hardware).
 
 ## References (from the research pass)
 

@@ -56,6 +56,8 @@ fn run() -> Result<()> {
         "ncc" => cmd_ncc(&positional, &opts),
         "cutout" => cmd_cutout(&positional, &opts),
         "laser-iso" => cmd_laser_iso(&positional, &opts),
+        "laser-fill" => cmd_laser_fill(&positional, &opts),
+        "laser-fit" => cmd_laser_fit(&positional, &opts),
         "laser-cal" => cmd_laser_cal(&opts),
         "script" => cmd_script(&positional),
         "-h" | "--help" | "help" => {
@@ -80,6 +82,11 @@ fn print_usage() {
          \x20                      (--beam-x --beam-y --beam-angle [--no-kerf] [--no-dynamic])\n\
          \x20                      astigmatic: --astig-waist-x/-y --astig-focus-x/-y\n\
          \x20                      --astig-rayleigh-x/-y --z <focusZ> (omit --z for round-spot Z)\n\
+         \x20                      [--densify[=frac]] [--power-curve <csv>]\n\
+         \x20 laser-fill <file>    cross-hatch / raster area-fill with beam comp\n\
+         \x20                      (--spacing --angles a,b --overlap | --raster --angle\n\
+         \x20                      --feed --latency --overscan [--power-curve <csv>])\n\
+         \x20 laser-fit <csv>      fit astigmatic beam from a z,width_x,width_y kerf CSV\n\
          \x20 laser-cal            emit a calibration grid (--cal direction|power|focus)\n\
          \x20 drill  <excellon>    drill an Excellon file to G-code\n\
          \x20 script <file>        run a batch script (see fc-script commands)\n\
@@ -374,7 +381,26 @@ fn cmd_laser_iso(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
     let overlap = getf(opts, "overlap", 0.0);
     let compensate_kerf = !opts.contains_key("no-kerf");
     let dynamic = !opts.contains_key("no-dynamic");
+    // Optional densify pre-pass: fixes affine-offset arc-chord stretch for
+    // high-aspect beams (--densify or --densify <fraction-of-short-extent>).
+    let geom = if opts.contains_key("densify") {
+        let frac = getf(opts, "densify", 0.25);
+        let g = fc_laser::densify_for_beam(&geom, &beam, frac);
+        eprintln!("laser-iso: densified rings (fraction {frac:.2} of beam short extent)");
+        g
+    } else {
+        geom
+    };
     let paths = fc_laser::laser_isolation(&geom, &beam, passes, overlap, compensate_kerf);
+    // Optional measured power-curve correction for visually-uniform burn.
+    let paths = if let Some(cp) = opts.get("power-curve") {
+        let txt = read(cp)?;
+        let curve = fc_laser::PowerCurve::from_samples(&fc_laser::parse_power_csv(&txt));
+        eprintln!("laser-iso: applied power curve from {cp}");
+        fc_laser::recompensate_with_curve(&paths, &curve)
+    } else {
+        paths
+    };
     // spindle_rpm is reused as the laser max S-value.
     let jp = job_params_from_opts(opts, Units::Mm);
     let gcode = fc_laser::laser_gcode(&paths, &jp, dynamic);
@@ -416,6 +442,84 @@ fn cmd_laser_cal(opts: &HashMap<String, String>) -> Result<()> {
     };
     eprintln!("laser-cal: {kind} grid generated");
     write_output(opts, &gcode)
+}
+
+/// Cross-hatch (or bidirectional raster) area-fill with beam-shape compensation.
+fn cmd_laser_fill(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
+    let path = pos.first().context("laser-fill: expected a gerber/svg/dxf/pdf path")?;
+    let (geom, _units) = load_geometry(path, opts)?;
+    let beam = fc_laser::BeamShape {
+        width_x: getf(opts, "beam-x", 0.1),
+        width_y: getf(opts, "beam-y", 0.1),
+        angle_deg: getf(opts, "beam-angle", 0.0),
+    };
+    let spacing = getf(opts, "spacing", beam.min_extent().max(0.1));
+    let dynamic = !opts.contains_key("no-dynamic");
+    let jp = job_params_from_opts(opts, Units::Mm);
+
+    let paths = if opts.contains_key("raster") {
+        // Bidirectional raster with banding/overscan timing compensation.
+        let angle = getf(opts, "angle", beam.angle_deg);
+        let feed = getf(opts, "feed", jp.feed_xy);
+        let latency = getf(opts, "latency", 0.0);
+        let margin = getf(opts, "overscan", 0.0);
+        let lines = fc_laser::raster_fill_banded(&geom, spacing, angle, feed, latency, margin);
+        // Power-compensate each scan line for the beam.
+        let mut out = Vec::new();
+        for l in &lines {
+            if l.len() >= 2 {
+                out.extend(fc_laser::compensate_power(&[l.clone()], &beam));
+            }
+        }
+        out
+    } else {
+        // Cross-hatch: explicit --angles "a,b,c" or the beam-orthogonal default.
+        match opts.get("angles") {
+            Some(s) => {
+                let angles: Vec<f64> = s.split(',').filter_map(|t| t.trim().parse().ok()).collect();
+                fc_laser::laser_fill_paths(&geom, &beam, spacing, &angles)
+            }
+            None => fc_laser::laser_fill_for_beam(&geom, &beam, getf(opts, "overlap", 0.1)),
+        }
+    };
+    // Optional measured power-curve correction.
+    let paths = if let Some(cp) = opts.get("power-curve") {
+        let curve = fc_laser::PowerCurve::from_samples(&fc_laser::parse_power_csv(&read(cp)?));
+        fc_laser::recompensate_with_curve(&paths, &curve)
+    } else {
+        paths
+    };
+    let gcode = fc_laser::laser_gcode(&paths, &jp, dynamic);
+    eprintln!(
+        "laser-fill: {} line(s), beam {:.3}x{:.3} @ {:.0}deg, spacing {:.3}, {}{}",
+        paths.len(), beam.width_x, beam.width_y, beam.angle_deg, spacing,
+        if opts.contains_key("raster") { "raster" } else { "cross-hatch" },
+        if dynamic { " M4" } else { " M3" }
+    );
+    write_output(opts, &gcode)
+}
+
+/// Fit the astigmatic beam model from a measured focus-ramp kerf CSV
+/// (`z,width_x,width_y` per line). Prints the fitted parameters.
+fn cmd_laser_fit(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
+    let path = pos.first().context("laser-fit: expected a kerf-measurement CSV path")?;
+    let meas = fc_laser::parse_kerf_csv(&read(path)?);
+    if meas.is_empty() {
+        bail!("laser-fit: no valid measurements in {path} (expected lines: z,width_x,width_y)");
+    }
+    let angle = getf(opts, "beam-angle", 0.0);
+    let ab = fc_laser::fit_astig(&meas, angle);
+    let report = format!(
+        "# fitted AstigmaticBeam ({} measurements)\n\
+         astig-waist-x   {:.5}\nastig-waist-y   {:.5}\n\
+         astig-focus-x   {:.5}\nastig-focus-y   {:.5}\n\
+         astig-rayleigh-x {:.5}\nastig-rayleigh-y {:.5}\n\
+         beam-angle      {:.3}\nround-spot-z    {:?}\nbest-focus-z    {:.5}\n",
+        meas.len(), ab.waist_x, ab.waist_y, ab.focus_x, ab.focus_y,
+        ab.rayleigh_x, ab.rayleigh_y, ab.angle_deg, ab.round_spot_z(), ab.best_focus()
+    );
+    eprintln!("laser-fit: fitted from {} measurements", meas.len());
+    write_output(opts, &report)
 }
 
 fn cmd_script(pos: &[String]) -> Result<()> {

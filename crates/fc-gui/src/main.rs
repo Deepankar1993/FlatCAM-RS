@@ -169,6 +169,12 @@ struct FlatCamApp {
     /// Feed/power used for the burn simulation + fill-angle optimiser.
     sim_feed: f64,
     sim_power: f64,
+    /// Pasted focus-ramp kerf measurements (`z,width_x,width_y` per line) for fit_astig.
+    cal_text: String,
+    /// Pasted power-curve samples (`power,depth` per line).
+    curve_text: String,
+    /// Apply the measured power curve to the emitted S values.
+    use_curve: bool,
     // editor
     editor: Editor,
     edit_tool: EditTool,
@@ -486,6 +492,19 @@ impl FlatCamApp {
         }
     }
 
+    /// The measured power curve, when enabled and parseable from `curve_text`.
+    fn active_curve(&self) -> Option<fc_laser::PowerCurve> {
+        if !self.use_curve {
+            return None;
+        }
+        let samples = fc_laser::parse_power_csv(&self.curve_text);
+        if samples.is_empty() {
+            None
+        } else {
+            Some(fc_laser::PowerCurve::from_samples(&samples))
+        }
+    }
+
     /// Beam-shape-compensated laser isolation of the selected region.
     fn run_laser_iso(&mut self) {
         let Some((geom, units, src)) = self.selected_region() else {
@@ -495,6 +514,10 @@ impl FlatCamApp {
         let beam = self.effective_beam();
         let passes = self.params.passes.max(1) as usize;
         let pwr = fc_laser::laser_isolation(&geom, &beam, passes, self.params.overlap, self.laser_kerf);
+        let pwr = match self.active_curve() {
+            Some(c) => fc_laser::recompensate_with_curve(&pwr, &c),
+            None => pwr,
+        };
         let jp = fc_gcode::JobParams { units, ..Default::default() };
         let gcode = fc_laser::laser_gcode(&pwr, &jp, self.laser_dynamic);
         let paths: Vec<Polyline> =
@@ -518,6 +541,55 @@ impl FlatCamApp {
             pwr.len(), beam.width_x, beam.width_y, beam.angle_deg,
             if self.use_astig { format!(" @Z{:.3}", self.focus_z) } else { String::new() },
             self.laser_kerf
+        );
+    }
+
+    /// Cross-hatch area-fill (beam-orthogonal) of the selected region.
+    fn run_laser_fill(&mut self) {
+        let Some((geom, units, src)) = self.selected_region() else {
+            self.status = "Select a Gerber/Geometry region first".into();
+            return;
+        };
+        let beam = self.effective_beam();
+        let pwr = fc_laser::laser_fill_for_beam(&geom, &beam, self.params.overlap.max(0.0));
+        let pwr = match self.active_curve() {
+            Some(c) => fc_laser::recompensate_with_curve(&pwr, &c),
+            None => pwr,
+        };
+        let jp = fc_gcode::JobParams { units, ..Default::default() };
+        let gcode = fc_laser::laser_gcode(&pwr, &jp, self.laser_dynamic);
+        let paths: Vec<Polyline> =
+            pwr.iter().map(|r| r.iter().map(|&(x, y, _)| (x, y)).collect()).collect();
+        self.last_gcode = Some(gcode.clone());
+        let keep = self.project.selected.clone();
+        let name = self.add_object(
+            &format!("{src}_fill"),
+            ObjectKind::CncJob,
+            units,
+            StoredGeom::Cnc(paths),
+            Some(src.clone()),
+            None,
+        );
+        if let Some(o) = self.store.get_mut(&name) {
+            o.gcode = Some(gcode);
+        }
+        self.project.selected = keep;
+        self.status = format!("laser-fill: {} cross-hatch line(s)", pwr.len());
+    }
+
+    /// Fit the astigmatic beam from the pasted focus-ramp kerf measurements.
+    fn fit_astig_from_text(&mut self) {
+        let meas = fc_laser::parse_kerf_csv(&self.cal_text);
+        if meas.is_empty() {
+            self.status = "No valid measurements (lines: z,width_x,width_y)".into();
+            return;
+        }
+        self.astig = fc_laser::fit_astig(&meas, self.astig.angle_deg);
+        self.use_astig = true;
+        self.focus_z = self.astig.round_spot_z().unwrap_or_else(|| self.astig.best_focus());
+        self.status = format!(
+            "Fitted astig from {} pts: waist {:.3}/{:.3}, focus {:.3}/{:.3}",
+            meas.len(), self.astig.waist_x, self.astig.waist_y, self.astig.focus_x, self.astig.focus_y
         );
     }
 
@@ -597,6 +669,18 @@ impl FlatCamApp {
         if kpts.len() >= 2 {
             painter.add(egui::Shape::closed_line(kpts, egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 150, 0))));
         }
+        // Dwell loop (spot extent along travel) shares the kerf scale for comparison.
+        let dwell_pts: Vec<(f64, f64)> = samples
+            .iter()
+            .map(|s| {
+                let t = s.angle_deg.to_radians();
+                (s.dwell * t.cos(), s.dwell * t.sin())
+            })
+            .collect();
+        let dpts = to_screen(&dwell_pts, kerf_scale);
+        if dpts.len() >= 2 {
+            painter.add(egui::Shape::closed_line(dpts, egui::Stroke::new(1.0, egui::Color32::from_rgb(120, 220, 120))));
+        }
         // Power-factor loop: radius in (0,1] -> fraction of the reference circle.
         let ppts = to_screen(&fc_laser::polar::polar_power_points(&samples), r_px as f64);
         if ppts.len() >= 2 {
@@ -604,7 +688,7 @@ impl FlatCamApp {
         }
         ui.label(
             egui::RichText::new(format!(
-                "kerf {min_k:.3}–{max_k:.3} mm   ● kerf  ● power",
+                "kerf {min_k:.3}–{max_k:.3} mm   ● kerf  ● power  ● dwell",
             ))
             .small(),
         );
@@ -936,9 +1020,14 @@ impl eframe::App for FlatCamApp {
                 });
                 // Directional anisotropy at a glance.
                 self.draw_polar_plot(ui);
-                if ui.button("Laser Iso").clicked() {
-                    self.run_laser_iso();
-                }
+                ui.horizontal(|ui| {
+                    if ui.button("Laser Iso").clicked() {
+                        self.run_laser_iso();
+                    }
+                    if ui.button("Cross-hatch fill").clicked() {
+                        self.run_laser_fill();
+                    }
+                });
                 ui.horizontal(|ui| {
                     ui.add(egui::DragValue::new(&mut self.sim_feed).speed(10.0).prefix("feed ").range(1.0..=20000.0));
                     ui.add(egui::DragValue::new(&mut self.sim_power).speed(0.01).prefix("power ").range(0.0..=1.0));
@@ -956,6 +1045,18 @@ impl eframe::App for FlatCamApp {
                 if self.show_burn {
                     self.draw_burn_legend(ui);
                 }
+                // Measured power curve (visually-uniform burn).
+                egui::CollapsingHeader::new("Power curve (power,depth)").show(ui, |ui| {
+                    ui.checkbox(&mut self.use_curve, "Apply curve to S values");
+                    ui.add(egui::TextEdit::multiline(&mut self.curve_text).desired_rows(3).hint_text("0,0\n0.5,0.25\n1,1"));
+                });
+                // Astig fit from a pasted focus-ramp kerf table.
+                egui::CollapsingHeader::new("Fit astig (z,width_x,width_y)").show(ui, |ui| {
+                    ui.add(egui::TextEdit::multiline(&mut self.cal_text).desired_rows(3).hint_text("-0.2,0.12,0.07\n0,0.06,0.10\n0.2,0.11,0.06"));
+                    if ui.button("Fit astig").clicked() {
+                        self.fit_astig_from_text();
+                    }
+                });
             });
         });
 
