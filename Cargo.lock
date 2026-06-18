@@ -1343,6 +1343,7 @@ dependencies = [
  "fc-laser",
  "fc-pdf",
  "fc-svg",
+ "image",
  "rfd",
 ]
 

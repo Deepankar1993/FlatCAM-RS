@@ -244,10 +244,30 @@ impl PluginKind {
                 ParamSpec::new("target width", 100.0, 1.0, 1000.0),
                 ParamSpec::new("target height", 100.0, 1.0, 1000.0),
             ],
+            PaintTool => vec![
+                ParamSpec::new("tool diameter", 0.5, 0.05, 10.0),
+                ParamSpec::new("overlap", 0.2, 0.0, 0.95),
+                ParamSpec::new("margin", 0.0, 0.0, 50.0),
+            ],
+            NccTool => vec![
+                ParamSpec::new("tool diameter", 0.5, 0.05, 10.0),
+                ParamSpec::new("overlap", 0.4, 0.0, 0.95),
+                ParamSpec::new("margin", 1.0, 0.0, 50.0),
+            ],
+            CutoutTool => vec![
+                ParamSpec::new("tool diameter", 1.0, 0.05, 10.0),
+                ParamSpec::new("gap size", 2.0, 0.1, 20.0),
+                ParamSpec::new("gaps", 4.0, 0.0, 32.0),
+                ParamSpec::new("outside (1) / on-line (0)", 1.0, 0.0, 1.0),
+            ],
+            Calculators => vec![
+                ParamSpec::new("v-bit tip diameter", 0.2, 0.0, 5.0),
+                ParamSpec::new("v-bit angle (deg)", 30.0, 1.0, 179.0),
+                ParamSpec::new("cut depth", 0.05, 0.0, 5.0),
+            ],
             // Stubs and parameter-free tools.
             Follow | Optimal | Distance | Report | Film | Align | Subtract | ExtractDrills
-            | Punch | Markers | NccTool | PaintTool | CutoutTool | Calculators | Levelling
-            | QrCode => Vec::new(),
+            | Punch | Markers | Levelling | QrCode => Vec::new(),
         }
     }
 
@@ -495,10 +515,73 @@ impl PluginKind {
             ExtractDrills => PluginOutput::Message("Extract Drills: needs a Gerber pad source (not yet wired)".into()),
             Punch => PluginOutput::Message("Punch Gerber: needs an Excellon drill file (not yet wired)".into()),
             Markers => PluginOutput::Message("Markers: needs interactive marker placement (not yet wired)".into()),
-            NccTool => PluginOutput::Message("NCC: available on the toolbar (multi-tool clearing, not yet wired here)".into()),
-            PaintTool => PluginOutput::Message("Paint: available on the toolbar (region painting, not yet wired here)".into()),
-            CutoutTool => PluginOutput::Message("Cutout: available on the toolbar (board cutout, not yet wired here)".into()),
-            Calculators => PluginOutput::Message("Calculators: opens the calculators panel (not yet wired here)".into()),
+            // --- CAM: wired to single-region fc_cam functions -----------------
+            PaintTool => {
+                if empty {
+                    return PluginOutput::Message("Paint: select a region first".into());
+                }
+                let p = fc_cam::PaintParams {
+                    tool_diameter: get(0),
+                    overlap: get(1),
+                    margin: get(2),
+                    add_contour: true,
+                    ..Default::default()
+                };
+                let paths = fc_cam::paint_region(region, &p);
+                if paths.is_empty() {
+                    PluginOutput::Message(
+                        "Paint: region too small for the tool (no paths)".into(),
+                    )
+                } else {
+                    PluginOutput::Paths(paths)
+                }
+            }
+            NccTool => {
+                if empty {
+                    return PluginOutput::Message("NCC: select a region first".into());
+                }
+                let p = fc_cam::NccParams {
+                    tool_diameter: get(0),
+                    overlap: get(1),
+                    boundary_margin: get(2),
+                    ..Default::default()
+                };
+                let paths = fc_cam::ncc_paths(region, &p);
+                if paths.is_empty() {
+                    PluginOutput::Message("NCC: nothing to clear (no paths)".into())
+                } else {
+                    PluginOutput::Paths(paths)
+                }
+            }
+            CutoutTool => {
+                if empty {
+                    return PluginOutput::Message("Cutout: select a region first".into());
+                }
+                let p = fc_cam::CutoutParams {
+                    tool_diameter: get(0),
+                    tab_gap: get(1),
+                    tabs: (get(2).round() as i64).max(0) as usize,
+                    outside: get(3) >= 0.5,
+                    ..Default::default()
+                };
+                let paths = fc_cam::cutout_geometry(region, &p);
+                if paths.is_empty() {
+                    PluginOutput::Message("Cutout: outline produced no cut arcs".into())
+                } else {
+                    PluginOutput::Paths(paths)
+                }
+            }
+            Calculators => {
+                // V-bit cut-width geometry — independent of the selected region.
+                let tip_dia = get(0);
+                let angle_deg = get(1);
+                let depth = get(2);
+                let width = fc_cam::calculators::v_bit_cut_width(depth, tip_dia, angle_deg);
+                PluginOutput::Report(format!(
+                    "V-Bit Calculator\n  tip diameter: {:.4}\n  included angle: {:.2} deg\n  cut depth:    {:.4}\n  => cut width: {:.4}",
+                    tip_dia, angle_deg, depth, width
+                ))
+            }
             Levelling => PluginOutput::Message("Levelling: needs a probe grid + height map (not yet wired)".into()),
             QrCode => PluginOutput::Message("QR Code: needs text input to encode (not yet wired)".into()),
         }
@@ -511,8 +594,7 @@ impl PluginKind {
         use PluginKind::*;
         matches!(
             self,
-            Film | Align | Subtract | ExtractDrills | Punch | Markers
-                | NccTool | PaintTool | CutoutTool | Calculators | Levelling | QrCode
+            Film | Align | Subtract | ExtractDrills | Punch | Markers | Levelling | QrCode
         )
     }
 }
@@ -522,7 +604,7 @@ mod tests {
     use super::*;
 
     fn region() -> MultiPolygon<f64> {
-        MultiPolygon::new(vec![fc_geo::centered_rect(0.0, 0.0, 10.0, 10.0)])
+        MultiPolygon::new(vec![fc_geo::centered_rect(0.0, 0.0, 20.0, 20.0)])
     }
 
     #[test]
@@ -565,6 +647,47 @@ mod tests {
             PluginOutput::Paths(p) => assert!(!p.is_empty(), "follow should trace the ring(s)"),
             _ => panic!("Follow should return Paths"),
         }
+    }
+
+    #[test]
+    fn paint_returns_paths() {
+        let r = region();
+        match PaintTool.apply(&r, &PaintTool.params().iter().map(|s| s.default).collect::<Vec<_>>()) {
+            PluginOutput::Paths(p) => assert!(!p.is_empty(), "paint should produce infill paths"),
+            _ => panic!("PaintTool should return Paths"),
+        }
+        assert!(!PaintTool.is_stub(), "PaintTool should no longer be a stub");
+    }
+
+    #[test]
+    fn ncc_returns_paths() {
+        let r = region();
+        match NccTool.apply(&r, &NccTool.params().iter().map(|s| s.default).collect::<Vec<_>>()) {
+            PluginOutput::Paths(p) => assert!(!p.is_empty(), "ncc should produce clearing paths"),
+            _ => panic!("NccTool should return Paths"),
+        }
+        assert!(!NccTool.is_stub(), "NccTool should no longer be a stub");
+    }
+
+    #[test]
+    fn cutout_returns_paths_or_region() {
+        let r = region();
+        match CutoutTool.apply(&r, &CutoutTool.params().iter().map(|s| s.default).collect::<Vec<_>>()) {
+            PluginOutput::Paths(p) => assert!(!p.is_empty(), "cutout should produce cut arcs"),
+            PluginOutput::Region(_) => {}
+            _ => panic!("CutoutTool should return Paths or a Region"),
+        }
+        assert!(!CutoutTool.is_stub(), "CutoutTool should no longer be a stub");
+    }
+
+    #[test]
+    fn calculators_returns_report() {
+        let r = region();
+        match Calculators.apply(&r, &Calculators.params().iter().map(|s| s.default).collect::<Vec<_>>()) {
+            PluginOutput::Report(_) => {}
+            _ => panic!("Calculators should return a Report"),
+        }
+        assert!(!Calculators.is_stub(), "Calculators should no longer be a stub");
     }
 
     #[test]

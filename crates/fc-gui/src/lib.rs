@@ -264,6 +264,8 @@ pub struct FlatCamApp {
     grid_snap: bool,
     /// Status-bar units selector label ("mm" / "inch").
     units_label: String,
+    /// World-space start of a right-drag rubber-band selection (if active).
+    band_start: Option<(f64, f64)>,
     /// Active left-notebook tab.
     left_tab: LeftTab,
     /// The plugin currently shown in the Plugin tab (from the Plugins menu).
@@ -1091,6 +1093,60 @@ impl FlatCamApp {
     // ----- rendering helpers -----
 
 
+    /// Bounding box `(minx, miny, maxx, maxy)` of a stored object's rings.
+    fn object_bbox(s: &StoredObj) -> Option<(f64, f64, f64, f64)> {
+        let mut b: Option<(f64, f64, f64, f64)> = None;
+        for (ring, _) in &s.rings {
+            for &(x, y) in ring {
+                b = Some(match b {
+                    None => (x, y, x, y),
+                    Some((a, c, d, e)) => (a.min(x), c.min(y), d.max(x), e.max(y)),
+                });
+            }
+        }
+        b
+    }
+
+    /// The topmost visible object under world point `world` (regions hit-test by
+    /// containment; others by bounding box), or `None`.
+    fn object_at(&self, world: (f64, f64)) -> Option<String> {
+        for obj in self.project.objects.iter().rev() {
+            if !obj.visible {
+                continue;
+            }
+            let Some(s) = self.store.get(&obj.name) else { continue };
+            let hit = match &s.geom {
+                StoredGeom::Region(mp) => fc_geo::contains_point(mp, world.0, world.1),
+                _ => Self::object_bbox(s).is_some_and(|(a, c, d, e)| {
+                    world.0 >= a && world.0 <= d && world.1 >= c && world.1 <= e
+                }),
+            };
+            if hit {
+                return Some(obj.name.clone());
+            }
+        }
+        None
+    }
+
+    /// The topmost visible object whose bounding box intersects the world-space
+    /// box `a`–`b` (rubber-band select), or `None`.
+    fn object_in_box(&self, a: (f64, f64), b: (f64, f64)) -> Option<String> {
+        let (minx, maxx) = (a.0.min(b.0), a.0.max(b.0));
+        let (miny, maxy) = (a.1.min(b.1), a.1.max(b.1));
+        for obj in self.project.objects.iter().rev() {
+            if !obj.visible {
+                continue;
+            }
+            let Some(s) = self.store.get(&obj.name) else { continue };
+            if let Some((ox, oy, ox2, oy2)) = Self::object_bbox(s) {
+                if ox <= maxx && ox2 >= minx && oy <= maxy && oy2 >= miny {
+                    return Some(obj.name.clone());
+                }
+            }
+        }
+        None
+    }
+
     fn all_bounds(&self) -> Option<(f64, f64, f64, f64)> {
         let mut b: Option<(f64, f64, f64, f64)> = None;
         for obj in self.project.objects.iter().filter(|o| o.visible) {
@@ -1375,7 +1431,11 @@ impl FlatCamApp {
                 painter.line_segment([egui::pos2(rect.left(), sy), egui::pos2(rect.right(), sy)], stroke);
             }
         };
-        grid(minor, pal.grid_minor, 1.0);
+        // Only draw the fine (minor) grid when its lines are comfortably spaced
+        // (>= 9 px); otherwise it turns into busy noise over the board.
+        if (minor * scale) >= 9.0 {
+            grid(minor, pal.grid_minor, 1.0);
+        }
         grid(major, pal.grid_major, 1.0);
 
         // Red origin axes (drawn only when 0 is within view).
@@ -1698,7 +1758,8 @@ impl FlatCamApp {
             }
             // Measurement grid + axes + rulers, behind everything.
             self.draw_grid(&painter, rect, &pal);
-            if response.dragged() {
+            // LEFT-drag pans the view.
+            if response.dragged_by(egui::PointerButton::Primary) {
                 let d = response.drag_delta();
                 self.camera.center.0 -= (d.x / self.camera.scale.max(1e-6)) as f64;
                 self.camera.center.1 += (d.y / self.camera.scale.max(1e-6)) as f64;
@@ -1719,6 +1780,34 @@ impl FlatCamApp {
                 }
                 if ui.input(|i| i.key_pressed(egui::Key::Delete)) {
                     self.delete_selected_edit();
+                }
+            } else {
+                // LEFT-click selects the object under the cursor (or clears).
+                if response.clicked() {
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        let w = self.camera.to_world(pos, rect);
+                        match self.object_at(w) {
+                            Some(n) => {
+                                self.project.select(&n);
+                                self.rename_buf = n;
+                            }
+                            None => self.project.selected = None,
+                        }
+                    }
+                }
+                // RIGHT-drag is a rubber-band select; RIGHT-click (no drag) opens
+                // the context menu (handled below via `context_menu`).
+                if response.drag_started_by(egui::PointerButton::Secondary) {
+                    self.band_start = response.interact_pointer_pos().map(|p| self.camera.to_world(p, rect));
+                }
+                if response.drag_stopped_by(egui::PointerButton::Secondary) {
+                    if let (Some(a), Some(pos)) = (self.band_start.take(), response.interact_pointer_pos()) {
+                        let b = self.camera.to_world(pos, rect);
+                        if let Some(n) = self.object_in_box(a, b) {
+                            self.project.select(&n);
+                            self.rename_buf = n;
+                        }
+                    }
                 }
             }
 
@@ -1748,18 +1837,19 @@ impl FlatCamApp {
                     }
                     painter.add(egui::Shape::mesh(mesh));
                 }
-                let stroke = egui::Stroke::new(if is_sel { 2.0 } else { 1.0 }, color);
+                let stroke = egui::Stroke::new(if is_sel { 1.6 } else { 1.0 }, color);
+                // Batch each ring into ONE polyline Shape (was a Shape per edge →
+                // tens of thousands of shapes/frame for dense layers → sluggish).
                 for (ring, closed) in &s.rings {
                     if ring.len() == 1 {
                         painter.circle_stroke(self.camera.to_screen(ring[0], rect), 2.0, stroke);
                         continue;
                     }
                     let pts: Vec<egui::Pos2> = ring.iter().map(|&p| self.camera.to_screen(p, rect)).collect();
-                    for w in pts.windows(2) {
-                        painter.line_segment([w[0], w[1]], stroke);
-                    }
                     if *closed && pts.len() >= 3 {
-                        painter.line_segment([pts[pts.len() - 1], pts[0]], stroke);
+                        painter.add(egui::Shape::closed_line(pts, stroke));
+                    } else {
+                        painter.add(egui::Shape::line(pts, stroke));
                     }
                 }
             }
@@ -1795,6 +1885,19 @@ impl FlatCamApp {
                 }
             }
 
+            // Rubber-band selection rectangle (active right-drag).
+            if let (Some(a), Some(p)) = (self.band_start, response.hover_pos()) {
+                let accent = ui.visuals().hyperlink_color;
+                let pa = self.camera.to_screen(a, rect);
+                let r = egui::Rect::from_two_pos(pa, p);
+                painter.rect(
+                    r,
+                    0.0,
+                    egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 26),
+                    egui::Stroke::new(1.0, accent),
+                );
+            }
+
             // Cursor crosshair + live coordinate tag.
             if let Some(p) = response.hover_pos() {
                 let cs = egui::Stroke::new(1.0, pal.cursor);
@@ -1812,6 +1915,49 @@ impl FlatCamApp {
                     );
                 }
             }
+
+            // Right-click context menu: object actions over an object, else canvas.
+            let menu_target = response
+                .hover_pos()
+                .map(|p| self.camera.to_world(p, rect))
+                .and_then(|w| self.object_at(w));
+            response.context_menu(|ui| {
+                if let Some(name) = menu_target {
+                    ui.label(egui::RichText::new(&name).strong());
+                    ui.separator();
+                    if ui.button("Select").clicked() {
+                        self.project.select(&name);
+                        self.rename_buf = name.clone();
+                        ui.close_menu();
+                    }
+                    if ui.button("Properties").clicked() {
+                        self.project.select(&name);
+                        self.left_tab = LeftTab::Properties;
+                        ui.close_menu();
+                    }
+                    if ui.button("Isolation").clicked() {
+                        self.project.select(&name);
+                        self.run_isolation();
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Delete").clicked() {
+                        self.project.select(&name);
+                        self.delete_selected();
+                        ui.close_menu();
+                    }
+                } else {
+                    if ui.button("Open file…").clicked() {
+                        self.open_file_dialog("", &[]);
+                        ui.close_menu();
+                    }
+                    if ui.button("Zoom Fit").clicked() {
+                        self.camera.initialized = false;
+                        ui.close_menu();
+                    }
+                    ui.checkbox(&mut self.fill_on, "Fill");
+                }
+            });
         });
 
         // Settings window (binds the fc_app::Preferences model).
