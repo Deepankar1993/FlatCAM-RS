@@ -1851,7 +1851,7 @@ impl FlatCamApp {
                 // → thousands of shapes/frame) and use low alpha so stacked layers
                 // stay readable (no green flood).
                 if self.fill_on && !s.fill.is_empty() {
-                    let a = if is_sel { 55 } else { 32 };
+                    let a = if is_sel { 130 } else { 60 };
                     let fill = egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), a);
                     let mut mesh = egui::Mesh::default();
                     for tri in &s.fill {
@@ -1863,7 +1863,7 @@ impl FlatCamApp {
                     }
                     painter.add(egui::Shape::mesh(mesh));
                 }
-                let stroke = egui::Stroke::new(if is_sel { 1.6 } else { 1.0 }, color);
+                let stroke = egui::Stroke::new(if is_sel { 1.8 } else { 1.2 }, color);
                 // Batch each ring into ONE polyline Shape (was a Shape per edge →
                 // tens of thousands of shapes/frame for dense layers → sluggish).
                 for (ring, closed) in &s.rings {
@@ -2051,18 +2051,37 @@ impl FlatCamApp {
         }
         let mut to_select: Option<String> = None;
         let mut to_toggle: Option<String> = None;
-        for row in &rows {
-            ui.horizontal(|ui| {
-                ui.add_space((row.depth as f32) * 14.0);
-                let mut vis = row.visible;
-                if ui.checkbox(&mut vis, "").changed() {
-                    to_toggle = Some(row.name.clone());
-                }
-                let label = format!("{} {}", fc_app::kind_icon(row.kind), row.name);
-                if ui.selectable_label(row.selected, label).clicked() {
-                    to_select = Some(row.name.clone());
-                }
-            });
+        // Group objects by type into collapsible categories (like stock FlatCAM:
+        // Gerber / Excellon / Geometry / CNC Job / …) instead of one flat list.
+        let cats: [(ObjectKind, &str); 6] = [
+            (ObjectKind::Gerber, "Gerber"),
+            (ObjectKind::Excellon, "Excellon"),
+            (ObjectKind::Geometry, "Geometry"),
+            (ObjectKind::CncJob, "CNC Job"),
+            (ObjectKind::Svg, "SVG"),
+            (ObjectKind::Document, "Document"),
+        ];
+        for (kind, label) in cats {
+            let items: Vec<&_> = rows.iter().filter(|r| r.kind == kind).collect();
+            if items.is_empty() {
+                continue;
+            }
+            egui::CollapsingHeader::new(format!("{}  {}", fc_app::kind_icon(kind), label))
+                .id_salt(label)
+                .default_open(true)
+                .show(ui, |ui| {
+                    for row in items {
+                        ui.horizontal(|ui| {
+                            let mut vis = row.visible;
+                            if ui.checkbox(&mut vis, "").changed() {
+                                to_toggle = Some(row.name.clone());
+                            }
+                            if ui.selectable_label(row.selected, &row.name).clicked() {
+                                to_select = Some(row.name.clone());
+                            }
+                        });
+                    }
+                });
         }
         if let Some(n) = to_toggle {
             self.project.toggle_visible(&n);
