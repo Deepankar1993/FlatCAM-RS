@@ -78,6 +78,8 @@ fn print_usage() {
          \x20 cutout <gerber>      mill the board outline with holding tabs\n\
          \x20 laser-iso <file>     isolation with diode beam-shape compensation\n\
          \x20                      (--beam-x --beam-y --beam-angle [--no-kerf] [--no-dynamic])\n\
+         \x20                      astigmatic: --astig-waist-x/-y --astig-focus-x/-y\n\
+         \x20                      --astig-rayleigh-x/-y --z <focusZ> (omit --z for round-spot Z)\n\
          \x20 laser-cal            emit a calibration grid (--cal direction|power|focus)\n\
          \x20 drill  <excellon>    drill an Excellon file to G-code\n\
          \x20 script <file>        run a batch script (see fc-script commands)\n\
@@ -336,10 +338,37 @@ fn geo_bounds(mp: &geo::MultiPolygon<f64>) -> Option<(f64, f64, f64, f64)> {
 fn cmd_laser_iso(pos: &[String], opts: &HashMap<String, String>) -> Result<()> {
     let path = pos.first().context("laser-iso: expected a gerber/svg/dxf/pdf path")?;
     let (geom, _units) = load_geometry(path, opts)?;
-    let beam = fc_laser::BeamShape {
-        width_x: getf(opts, "beam-x", 0.1),
-        width_y: getf(opts, "beam-y", 0.1),
-        angle_deg: getf(opts, "beam-angle", 0.0),
+    // Astigmatic mode: if any --astig-* option is present, build a Z-dependent
+    // AstigmaticBeam and evaluate it at the chosen focus Z (--z, or the model's
+    // round-spot Z when --z is omitted) to get the flat BeamShape for this run.
+    let astig_keys = ["astig-waist-x", "astig-waist-y", "astig-focus-x", "astig-focus-y",
+                      "astig-rayleigh-x", "astig-rayleigh-y"];
+    let beam = if astig_keys.iter().any(|k| opts.contains_key(*k)) {
+        let ab = fc_laser::AstigmaticBeam {
+            waist_x: getf(opts, "astig-waist-x", 0.06),
+            waist_y: getf(opts, "astig-waist-y", 0.10),
+            focus_x: getf(opts, "astig-focus-x", 0.0),
+            focus_y: getf(opts, "astig-focus-y", 0.0),
+            rayleigh_x: getf(opts, "astig-rayleigh-x", 1.0),
+            rayleigh_y: getf(opts, "astig-rayleigh-y", 1.0),
+            angle_deg: getf(opts, "beam-angle", 0.0),
+        };
+        let z = match opts.get("z") {
+            Some(s) => s.parse::<f64>().unwrap_or(0.0),
+            None => ab.round_spot_z().unwrap_or_else(|| ab.best_focus()),
+        };
+        let b = ab.at(z);
+        eprintln!(
+            "laser-iso: astigmatic beam @ Z={:.4} -> {:.3}x{:.3} (round-spot Z {:?}, best-focus Z {:.4})",
+            z, b.width_x, b.width_y, ab.round_spot_z(), ab.best_focus()
+        );
+        b
+    } else {
+        fc_laser::BeamShape {
+            width_x: getf(opts, "beam-x", 0.1),
+            width_y: getf(opts, "beam-y", 0.1),
+            angle_deg: getf(opts, "beam-angle", 0.0),
+        }
     };
     let passes = getf(opts, "passes", 1.0) as usize;
     let overlap = getf(opts, "overlap", 0.0);

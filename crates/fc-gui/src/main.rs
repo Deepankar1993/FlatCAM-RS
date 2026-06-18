@@ -31,6 +31,8 @@ fn main() -> eframe::Result<()> {
             app.fill_on = true;
             app.laser_kerf = true;
             app.laser_dynamic = true;
+            app.sim_feed = 800.0;
+            app.sim_power = 1.0;
             if let Some(path) = initial {
                 app.load_path(&path);
             }
@@ -153,11 +155,20 @@ struct FlatCamApp {
     cursor_world: Option<(f64, f64)>,
     // --- laser ---
     beam: fc_laser::BeamShape,
+    /// Z-dependent astigmatic beam model; used when `use_astig` is set.
+    astig: fc_laser::AstigmaticBeam,
+    /// When set, the working beam is `astig.at(focus_z)` instead of `beam`.
+    use_astig: bool,
+    /// Focus height (machine Z) at which the astigmatic beam is evaluated.
+    focus_z: f64,
     laser_kerf: bool,
     laser_dynamic: bool,
     show_burn: bool,
     burn_tex: Option<egui::TextureHandle>,
     burn_rect: Option<(f64, f64, f64, f64)>,
+    /// Feed/power used for the burn simulation + fill-angle optimiser.
+    sim_feed: f64,
+    sim_power: f64,
     // editor
     editor: Editor,
     edit_tool: EditTool,
@@ -465,14 +476,25 @@ impl FlatCamApp {
         self.status = format!("{op} applied to {sel}");
     }
 
+    /// The flat working beam: the astigmatic model evaluated at `focus_z` when
+    /// astigmatic mode is on, otherwise the directly-edited [`fc_laser::BeamShape`].
+    fn effective_beam(&self) -> fc_laser::BeamShape {
+        if self.use_astig {
+            self.astig.at(self.focus_z)
+        } else {
+            self.beam
+        }
+    }
+
     /// Beam-shape-compensated laser isolation of the selected region.
     fn run_laser_iso(&mut self) {
         let Some((geom, units, src)) = self.selected_region() else {
             self.status = "Select a Gerber/Geometry region first".into();
             return;
         };
+        let beam = self.effective_beam();
         let passes = self.params.passes.max(1) as usize;
-        let pwr = fc_laser::laser_isolation(&geom, &self.beam, passes, self.params.overlap, self.laser_kerf);
+        let pwr = fc_laser::laser_isolation(&geom, &beam, passes, self.params.overlap, self.laser_kerf);
         let jp = fc_gcode::JobParams { units, ..Default::default() };
         let gcode = fc_laser::laser_gcode(&pwr, &jp, self.laser_dynamic);
         let paths: Vec<Polyline> =
@@ -492,8 +514,10 @@ impl FlatCamApp {
         }
         self.project.selected = keep;
         self.status = format!(
-            "laser-iso: {} paths, beam {:.2}×{:.2} @ {:.0}° (kerf-comp {})",
-            pwr.len(), self.beam.width_x, self.beam.width_y, self.beam.angle_deg, self.laser_kerf
+            "laser-iso: {} paths, beam {:.2}×{:.2} @ {:.0}°{} (kerf-comp {})",
+            pwr.len(), beam.width_x, beam.width_y, beam.angle_deg,
+            if self.use_astig { format!(" @Z{:.3}", self.focus_z) } else { String::new() },
+            self.laser_kerf
         );
     }
 
@@ -502,8 +526,9 @@ impl FlatCamApp {
             self.status = "Select a region first".into();
             return;
         };
-        let spacing = self.beam.min_extent().max(0.1);
-        let (angle, cv) = fc_laser::optimal_fill_angle(&geom, &self.beam, spacing, 800.0, 1.0);
+        let beam = self.effective_beam();
+        let spacing = beam.min_extent().max(0.1);
+        let (angle, cv) = fc_laser::optimal_fill_angle(&geom, &beam, spacing, self.sim_feed, self.sim_power);
         self.status = format!("Best fill angle: {angle:.0}° (burn-uniformity CV {cv:.3})");
     }
 
@@ -517,8 +542,9 @@ impl FlatCamApp {
                 return;
             }
         };
-        let cell = self.beam.max_extent().max(0.12);
-        let map = fc_laser::simulate(&paths, &self.beam, 800.0, 1.0, cell);
+        let beam = self.effective_beam();
+        let cell = beam.max_extent().max(0.12);
+        let map = fc_laser::simulate(&paths, &beam, self.sim_feed, self.sim_power, cell);
         if map.cols == 0 || map.rows == 0 {
             return;
         }
@@ -543,6 +569,60 @@ impl FlatCamApp {
         self.burn_tex = Some(tex);
         self.show_burn = true;
         self.status = "Burn preview updated".into();
+    }
+
+    /// Draw a small polar plot of kerf (orange) and power-factor (cyan) vs travel
+    /// direction for the current working beam, so the anisotropy is visible.
+    fn draw_polar_plot(&self, ui: &mut egui::Ui) {
+        let beam = self.effective_beam();
+        let samples = fc_laser::polar_samples(&beam, 72);
+        let (min_k, max_k, _min_p, _max_p) = fc_laser::polar::polar_extents(&samples);
+        let (resp, painter) = ui.allocate_painter(egui::vec2(150.0, 150.0), egui::Sense::hover());
+        let rect = resp.rect;
+        let c = rect.center();
+        let r_px = (rect.width().min(rect.height()) / 2.0) - 8.0;
+        // Axes + unit/power reference circle.
+        let axis = egui::Stroke::new(1.0, egui::Color32::from_gray(90));
+        painter.line_segment([egui::pos2(c.x - r_px, c.y), egui::pos2(c.x + r_px, c.y)], axis);
+        painter.line_segment([egui::pos2(c.x, c.y - r_px), egui::pos2(c.x, c.y + r_px)], axis);
+        painter.circle_stroke(c, r_px, egui::Stroke::new(1.0, egui::Color32::from_gray(60)));
+        let to_screen = |pts: &[(f64, f64)], scale: f64| -> Vec<egui::Pos2> {
+            pts.iter()
+                .map(|&(x, y)| egui::pos2(c.x + (x * scale) as f32, c.y - (y * scale) as f32))
+                .collect()
+        };
+        // Kerf loop: radius = kerf, scaled so max kerf reaches the plot edge.
+        let kerf_scale = if max_k > 1e-9 { (r_px as f64) / max_k } else { 0.0 };
+        let kpts = to_screen(&fc_laser::polar::polar_kerf_points(&samples), kerf_scale);
+        if kpts.len() >= 2 {
+            painter.add(egui::Shape::closed_line(kpts, egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 150, 0))));
+        }
+        // Power-factor loop: radius in (0,1] -> fraction of the reference circle.
+        let ppts = to_screen(&fc_laser::polar::polar_power_points(&samples), r_px as f64);
+        if ppts.len() >= 2 {
+            painter.add(egui::Shape::closed_line(ppts, egui::Stroke::new(1.5, egui::Color32::from_rgb(0, 200, 220))));
+        }
+        ui.label(
+            egui::RichText::new(format!(
+                "kerf {min_k:.3}–{max_k:.3} mm   ● kerf  ● power",
+            ))
+            .small(),
+        );
+    }
+
+    /// A compact horizontal legend strip for the burn heatmap (low→high fluence).
+    fn draw_burn_legend(&self, ui: &mut egui::Ui) {
+        let (resp, painter) = ui.allocate_painter(egui::vec2(150.0, 12.0), egui::Sense::hover());
+        let rect = resp.rect;
+        let n = 32usize;
+        for i in 0..n {
+            let f = i as f32 / (n - 1) as f32;
+            let x0 = rect.left() + rect.width() * (i as f32) / (n as f32);
+            let x1 = rect.left() + rect.width() * ((i + 1) as f32) / (n as f32);
+            let col = egui::Color32::from_rgb(255, (255.0 * f) as u8, 0);
+            painter.rect_filled(egui::Rect::from_min_max(egui::pos2(x0, rect.top()), egui::pos2(x1, rect.bottom())), 0.0, col);
+        }
+        ui.label(egui::RichText::new("burn: low → high fluence").small());
     }
 
     /// Copy persisted preferences into the active CAM parameters.
@@ -825,16 +905,44 @@ impl eframe::App for FlatCamApp {
             self.draw_editor_panel(ui);
             ui.separator();
             egui::CollapsingHeader::new("Laser (diode beam)").show(ui, |ui| {
-                ui.add(egui::Slider::new(&mut self.beam.width_x, 0.02..=1.0).text("Beam X"));
-                ui.add(egui::Slider::new(&mut self.beam.width_y, 0.02..=1.0).text("Beam Y"));
-                ui.add(egui::Slider::new(&mut self.beam.angle_deg, 0.0..=180.0).text("Beam angle"));
+                ui.checkbox(&mut self.use_astig, "Astigmatic (Z-dependent)");
+                if self.use_astig {
+                    ui.add(egui::Slider::new(&mut self.astig.waist_x, 0.02..=1.0).text("Waist X"));
+                    ui.add(egui::Slider::new(&mut self.astig.waist_y, 0.02..=1.0).text("Waist Y"));
+                    ui.add(egui::Slider::new(&mut self.astig.focus_x, -2.0..=2.0).text("Focus X (Z)"));
+                    ui.add(egui::Slider::new(&mut self.astig.focus_y, -2.0..=2.0).text("Focus Y (Z)"));
+                    ui.add(egui::Slider::new(&mut self.astig.rayleigh_x, 0.05..=3.0).text("Rayleigh X"));
+                    ui.add(egui::Slider::new(&mut self.astig.rayleigh_y, 0.05..=3.0).text("Rayleigh Y"));
+                    ui.add(egui::Slider::new(&mut self.astig.angle_deg, 0.0..=180.0).text("Mount angle"));
+                    ui.add(egui::Slider::new(&mut self.focus_z, -2.0..=2.0).text("Focus Z"));
+                    ui.horizontal(|ui| {
+                        if ui.button("Round-spot Z").clicked() {
+                            self.focus_z = self.astig.round_spot_z().unwrap_or_else(|| self.astig.best_focus());
+                        }
+                        if ui.button("Best-focus Z").clicked() {
+                            self.focus_z = self.astig.best_focus();
+                        }
+                    });
+                    let b = self.astig.at(self.focus_z);
+                    ui.label(egui::RichText::new(format!("→ beam {:.3}×{:.3} @ {:.0}°", b.width_x, b.width_y, b.angle_deg)).small());
+                } else {
+                    ui.add(egui::Slider::new(&mut self.beam.width_x, 0.02..=1.0).text("Beam X"));
+                    ui.add(egui::Slider::new(&mut self.beam.width_y, 0.02..=1.0).text("Beam Y"));
+                    ui.add(egui::Slider::new(&mut self.beam.angle_deg, 0.0..=180.0).text("Beam angle"));
+                }
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut self.laser_kerf, "Kerf comp");
                     ui.checkbox(&mut self.laser_dynamic, "M4 dyn");
                 });
+                // Directional anisotropy at a glance.
+                self.draw_polar_plot(ui);
                 if ui.button("Laser Iso").clicked() {
                     self.run_laser_iso();
                 }
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut self.sim_feed).speed(10.0).prefix("feed ").range(1.0..=20000.0));
+                    ui.add(egui::DragValue::new(&mut self.sim_power).speed(0.01).prefix("power ").range(0.0..=1.0));
+                });
                 ui.horizontal(|ui| {
                     if ui.button("Optimize fill∠").clicked() {
                         self.optimize_fill();
@@ -845,6 +953,9 @@ impl eframe::App for FlatCamApp {
                     }
                 });
                 ui.checkbox(&mut self.show_burn, "Show burn");
+                if self.show_burn {
+                    self.draw_burn_legend(ui);
+                }
             });
         });
 
