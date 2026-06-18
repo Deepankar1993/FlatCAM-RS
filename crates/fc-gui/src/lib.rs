@@ -15,8 +15,10 @@ use fc_gcode::{JobKind, Polyline, Units};
 use fc_geo::MultiPolygon;
 use std::collections::HashMap;
 
+pub mod help;
 pub mod icons;
 pub mod plugins;
+pub mod preferences;
 pub mod theme;
 pub mod viewport;
 pub mod widgets;
@@ -36,6 +38,7 @@ impl FlatCamApp {
         app.sim_feed = 800.0;
         app.sim_power = 1.0;
         app.units_label = "mm".into();
+        app.show_grid = true;
         app
     }
 }
@@ -291,6 +294,11 @@ pub struct FlatCamApp {
     prefs: fc_app::Preferences,
     show_settings: bool,
     show_gcode: bool,
+    show_about: bool,
+    show_shortcuts: bool,
+    show_help: bool,
+    /// Whether the measurement grid is drawn (View ▸ Show Grid).
+    show_grid: bool,
     cursor_world: Option<(f64, f64)>,
     theme: Theme,
     /// Theme last pushed to egui, so we only call `set_visuals` on a change.
@@ -1152,6 +1160,17 @@ impl FlatCamApp {
     // ----- rendering helpers -----
 
 
+    /// Show or hide every object at once (View ▸ Enable/Disable all).
+    fn set_all_visible(&mut self, vis: bool) {
+        let names: Vec<String> = self.project.objects.iter().map(|o| o.name.clone()).collect();
+        for n in names {
+            if let Some(o) = self.project.objects.iter_mut().find(|o| o.name == n) {
+                o.visible = vis;
+            }
+        }
+        self.camera.initialized = false;
+    }
+
     /// Bounding box `(minx, miny, maxx, maxy)` of a stored object's rings.
     fn object_bbox(s: &StoredObj) -> Option<(f64, f64, f64, f64)> {
         let mut b: Option<(f64, f64, f64, f64)> = None;
@@ -1579,11 +1598,34 @@ impl FlatCamApp {
                         self.open_project();
                         ui.close_menu();
                     }
+                    ui.menu_button("Import", |ui| {
+                        if ui.button("Gerber…").clicked() {
+                            self.open_file_dialog("Gerber", &["gbr", "ger", "gtl", "gbl", "gto", "gbo", "gts", "gbs"]);
+                            ui.close_menu();
+                        }
+                        if ui.button("Excellon…").clicked() {
+                            self.open_file_dialog("Excellon", &["drl", "xln", "exc", "txt"]);
+                            ui.close_menu();
+                        }
+                        if ui.button("SVG…").clicked() {
+                            self.open_file_dialog("SVG", &["svg"]);
+                            ui.close_menu();
+                        }
+                        if ui.button("DXF…").clicked() {
+                            self.open_file_dialog("DXF", &["dxf"]);
+                            ui.close_menu();
+                        }
+                        if ui.button("PDF…").clicked() {
+                            self.open_file_dialog("PDF", &["pdf"]);
+                            ui.close_menu();
+                        }
+                    });
+                    ui.separator();
                     if ui.button("Save Project").clicked() {
                         self.save_project();
                         ui.close_menu();
                     }
-                    if ui.button("Save G-code…").clicked() {
+                    if ui.button("Export G-code…").clicked() {
                         self.save_gcode();
                         ui.close_menu();
                     }
@@ -1593,7 +1635,20 @@ impl FlatCamApp {
                     }
                 });
                 ui.menu_button("Edit", |ui| {
-                    if ui.button("Settings…").clicked() {
+                    if ui.button("Copy (duplicate)").clicked() {
+                        self.copy_selected();
+                        ui.close_menu();
+                    }
+                    if ui.button("Delete").clicked() {
+                        self.delete_selected();
+                        ui.close_menu();
+                    }
+                    if ui.button("Set Origin").clicked() {
+                        self.transform_selected("origin");
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Preferences…").clicked() {
                         self.show_settings = true;
                         ui.close_menu();
                     }
@@ -1603,7 +1658,18 @@ impl FlatCamApp {
                         self.camera.initialized = false;
                         ui.close_menu();
                     }
+                    ui.separator();
+                    if ui.button("Enable all").clicked() {
+                        self.set_all_visible(true);
+                        ui.close_menu();
+                    }
+                    if ui.button("Disable all").clicked() {
+                        self.set_all_visible(false);
+                        ui.close_menu();
+                    }
+                    ui.separator();
                     ui.checkbox(&mut self.fill_on, "Fill regions");
+                    ui.checkbox(&mut self.show_grid, "Show grid");
                     ui.separator();
                     ui.label("Theme");
                     ui.radio_value(&mut self.theme, Theme::Light, "Light");
@@ -1619,7 +1685,13 @@ impl FlatCamApp {
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button("Tools Database…").clicked() {
+                    ui.horizontal(|ui| {
+                        ui.label("Units");
+                        ui.radio_value(&mut self.units_label, "mm".to_string(), "mm");
+                        ui.radio_value(&mut self.units_label, "inch".to_string(), "inch");
+                    });
+                    ui.separator();
+                    if ui.button("Preferences…").clicked() {
                         self.show_settings = true;
                         ui.close_menu();
                     }
@@ -1629,8 +1701,12 @@ impl FlatCamApp {
                         self.project.selected = None;
                         ui.close_menu();
                     }
-                    if ui.button("Zoom Fit").clicked() {
-                        self.camera.initialized = false;
+                    if ui.button("Duplicate selected").clicked() {
+                        self.copy_selected();
+                        ui.close_menu();
+                    }
+                    if ui.button("Delete selected").clicked() {
+                        self.delete_selected();
                         ui.close_menu();
                     }
                 });
@@ -1660,8 +1736,17 @@ impl FlatCamApp {
                     }
                 });
                 ui.menu_button("Help", |ui| {
+                    if ui.button("Getting Started").clicked() {
+                        self.show_help = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("Keyboard & Mouse").clicked() {
+                        self.show_shortcuts = true;
+                        ui.close_menu();
+                    }
+                    ui.separator();
                     if ui.button("About").clicked() {
-                        self.status = "FlatCAM-RS — a Rust port of FlatCAM Evo".into();
+                        self.show_about = true;
                         ui.close_menu();
                     }
                 });
@@ -1818,7 +1903,9 @@ impl FlatCamApp {
                 }
             }
             // Measurement grid + axes + rulers, behind everything.
-            self.draw_grid(&painter, rect, &pal);
+            if self.show_grid {
+                self.draw_grid(&painter, rect, &pal);
+            }
             // LEFT-drag pans the view.
             if response.dragged_by(egui::PointerButton::Primary) {
                 let d = response.drag_delta();
@@ -2027,39 +2114,46 @@ impl FlatCamApp {
             });
         });
 
-        // Settings window (binds the fc_app::Preferences model).
+        // Preferences window (tabbed; binds the fc_app::Preferences model).
         let mut open = self.show_settings;
-        egui::Window::new("Settings").open(&mut open).resizable(false).show(ctx, |ui| {
-            ui.horizontal(|ui| { ui.label("Units"); ui.text_edit_singleline(&mut self.prefs.units); });
-            ui.add(egui::Slider::new(&mut self.prefs.default_tool_dia, 0.05..=6.0).text("Tool Ø"));
-            ui.add(egui::Slider::new(&mut self.prefs.default_cut_z, -5.0..=0.0).text("Cut Z"));
-            ui.add(egui::Slider::new(&mut self.prefs.default_travel_z, 0.0..=10.0).text("Travel Z"));
-            ui.add(egui::Slider::new(&mut self.prefs.default_feed_xy, 10.0..=2000.0).text("Feed XY"));
-            ui.add(egui::Slider::new(&mut self.prefs.default_feed_z, 10.0..=1000.0).text("Feed Z"));
-            ui.add(egui::Slider::new(&mut self.prefs.default_spindle, 0.0..=30000.0).text("Spindle"));
-            ui.add(egui::Slider::new(&mut self.prefs.iso_passes, 1..=8).text("Iso passes"));
-            ui.add(egui::Slider::new(&mut self.prefs.iso_overlap, 0.0..=0.9).text("Iso overlap"));
-            ui.horizontal(|ui| { ui.label("Preprocessor"); ui.text_edit_singleline(&mut self.prefs.default_preproc); });
-            ui.separator();
-            ui.horizontal(|ui| {
-                if ui.button("Apply to params").clicked() {
-                    self.apply_prefs();
-                }
-                if ui.button("Save…").clicked() {
-                    if let Some(path) = rfd::FileDialog::new().add_filter("prefs", &["json"]).set_file_name("prefs.json").save_file() {
-                        let _ = self.prefs.save(&path);
-                    }
-                }
-                if ui.button("Load…").clicked() {
-                    if let Some(path) = rfd::FileDialog::new().add_filter("prefs", &["json"]).pick_file() {
-                        if let Ok(p) = fc_app::Preferences::load(&path) {
-                            self.prefs = p;
+        egui::Window::new("Preferences")
+            .open(&mut open)
+            .resizable(true)
+            .default_size([470.0, 430.0])
+            .show(ctx, |ui| {
+                match preferences::preferences_body(ui, &mut self.prefs) {
+                    preferences::PrefsAction::ApplyToParams => self.apply_prefs(),
+                    preferences::PrefsAction::Save => {
+                        if let Some(path) = rfd::FileDialog::new().add_filter("prefs", &["json"]).set_file_name("prefs.json").save_file() {
+                            let _ = self.prefs.save(&path);
                         }
                     }
+                    preferences::PrefsAction::Load => {
+                        if let Some(path) = rfd::FileDialog::new().add_filter("prefs", &["json"]).pick_file() {
+                            if let Ok(p) = fc_app::Preferences::load(&path) {
+                                self.prefs = p;
+                            }
+                        }
+                    }
+                    // ResetDefaults already mutated prefs inside the body.
+                    preferences::PrefsAction::ResetDefaults | preferences::PrefsAction::None => {}
                 }
             });
-        });
         self.show_settings = open;
+
+        // Help windows (content provided by the `help` module).
+        egui::Window::new("About")
+            .open(&mut self.show_about)
+            .resizable(false)
+            .show(ctx, help::about_body);
+        egui::Window::new("Keyboard & Mouse")
+            .open(&mut self.show_shortcuts)
+            .resizable(false)
+            .show(ctx, help::shortcuts_body);
+        egui::Window::new("Getting Started")
+            .open(&mut self.show_help)
+            .resizable(false)
+            .show(ctx, help::getting_started_body);
 
         // G-code viewer window (selected CNCJob, else most recent).
         let mut gopen = self.show_gcode;
