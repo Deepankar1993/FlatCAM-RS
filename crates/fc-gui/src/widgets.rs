@@ -196,8 +196,108 @@ pub fn primary_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     .inner
 }
 
+/// Compute the drawn dash spans along a 1-D segment of length `len`.
+///
+/// Returns `(start, end)` offset pairs (in pixels from the segment start) for
+/// the *drawn* portions only, marching `dash` pixels on then `gap` pixels off.
+/// `phase` is the leftover offset carried in from a previous segment: it is the
+/// number of pixels already consumed into the current dash+gap cycle (so dashes
+/// stay continuous across corners). On return, `*phase` holds the leftover for
+/// the next segment.
+///
+/// Guards: non-positive `len` yields no spans; non-positive `dash`/`gap` is
+/// treated by the caller as "draw solid" (this helper still returns a single
+/// full span so it degrades gracefully).
+fn dash_spans(len: f32, dash: f32, gap: f32, phase: &mut f32) -> Vec<(f32, f32)> {
+    if len <= 0.0 {
+        return Vec::new();
+    }
+    if dash <= 0.0 || gap <= 0.0 {
+        // Solid fallback: one span covering the whole length, phase unchanged.
+        return vec![(0.0, len)];
+    }
+
+    let period = dash + gap;
+    let mut spans = Vec::new();
+    // `cursor` is the absolute offset along this segment (starts negative if we
+    // are mid-cycle from a carried phase).
+    let mut cursor = -(*phase % period);
+    while cursor < len {
+        let dash_start = cursor;
+        let dash_end = cursor + dash;
+        // Clip the drawn portion to [0, len].
+        let a = dash_start.max(0.0);
+        let b = dash_end.min(len);
+        if b > a {
+            spans.push((a, b));
+        }
+        cursor += period;
+    }
+
+    // Carry leftover into the next segment: how far we are into the cycle at
+    // the segment's end point.
+    *phase = ((*phase + len) % period + period) % period;
+    spans
+}
+
+/// Draw a dashed polyline through `points` (screen coords) with the given
+/// stroke, `dash` length and `gap` length in pixels. Used for the board-edge
+/// outline (stock FlatCAM shows the board cutout as a red dashed rectangle).
+pub fn dashed_line(
+    painter: &egui::Painter,
+    points: &[egui::Pos2],
+    stroke: egui::Stroke,
+    dash: f32,
+    gap: f32,
+) {
+    if points.len() < 2 {
+        return;
+    }
+
+    // Non-positive dash/gap → solid polyline (no dashing).
+    if dash <= 0.0 || gap <= 0.0 {
+        for pair in points.windows(2) {
+            painter.line_segment([pair[0], pair[1]], stroke);
+        }
+        return;
+    }
+
+    let mut phase = 0.0_f32;
+    for pair in points.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let seg_len = a.distance(b);
+        if seg_len <= 0.0 {
+            continue;
+        }
+        let dir = (b - a) / seg_len; // unit vector along the segment
+        for (s, e) in dash_spans(seg_len, dash, gap, &mut phase) {
+            let p0 = a + dir * s;
+            let p1 = a + dir * e;
+            painter.line_segment([p0, p1], stroke);
+        }
+    }
+}
+
+/// Convenience: dashed CLOSED loop (connects last point back to first).
+pub fn dashed_closed(
+    painter: &egui::Painter,
+    points: &[egui::Pos2],
+    stroke: egui::Stroke,
+    dash: f32,
+    gap: f32,
+) {
+    if points.len() < 2 {
+        return;
+    }
+    let mut closed = Vec::with_capacity(points.len() + 1);
+    closed.extend_from_slice(points);
+    closed.push(points[0]);
+    dashed_line(painter, &closed, stroke, dash, gap);
+}
+
 #[cfg(test)]
 mod tests {
+    use super::dash_spans;
     // Constructing a real `egui::Ui`/`Context` in a unit test is awkward
     // without a running app, so these are compile-only sanity checks for the
     // pure helpers in this module.
@@ -217,5 +317,52 @@ mod tests {
     #[test]
     fn trivial() {
         assert_eq!(2 + 2, 4);
+    }
+
+    #[test]
+    fn dash_spans_basic() {
+        let mut phase = 0.0;
+        let spans = dash_spans(10.0, 2.0, 2.0, &mut phase);
+        // First drawn span starts at 0 and is `dash` long.
+        assert_eq!(spans[0], (0.0, 2.0));
+        // Every span lies within [0, len] and is non-empty.
+        for &(a, b) in &spans {
+            assert!(a >= 0.0 && b <= 10.0, "span {a}..{b} out of [0,10]");
+            assert!(b > a, "empty span {a}..{b}");
+        }
+        // 10px with 2on/2off → dashes at [0,2],[4,6],[8,10].
+        assert_eq!(spans, vec![(0.0, 2.0), (4.0, 6.0), (8.0, 10.0)]);
+    }
+
+    #[test]
+    fn dash_spans_empty_for_nonpositive_len() {
+        let mut phase = 0.0;
+        assert!(dash_spans(0.0, 2.0, 2.0, &mut phase).is_empty());
+        assert!(dash_spans(-5.0, 2.0, 2.0, &mut phase).is_empty());
+    }
+
+    #[test]
+    fn dash_spans_solid_fallback_for_nonpositive_params() {
+        let mut phase = 0.0;
+        assert_eq!(dash_spans(10.0, 0.0, 2.0, &mut phase), vec![(0.0, 10.0)]);
+        assert_eq!(dash_spans(10.0, 2.0, 0.0, &mut phase), vec![(0.0, 10.0)]);
+    }
+
+    #[test]
+    fn dash_spans_phase_carries_across_segments() {
+        // A 3px segment with 2on/2off leaves us 3px into a 4px cycle, i.e. 1px
+        // into the "gap" — the next segment should start with a 1px-truncated
+        // gap before its first dash.
+        let mut phase = 0.0;
+        let first = dash_spans(3.0, 2.0, 2.0, &mut phase);
+        assert_eq!(first, vec![(0.0, 2.0)]);
+        assert_eq!(phase, 3.0);
+        // Next segment: cursor starts at -(3 % 4) = -3, first dash is [-3,-1]
+        // (clipped away), next dash at [1,3].
+        let second = dash_spans(5.0, 2.0, 2.0, &mut phase);
+        assert_eq!(second[0], (1.0, 3.0));
+        for &(a, b) in &second {
+            assert!(a >= 0.0 && b <= 5.0);
+        }
     }
 }

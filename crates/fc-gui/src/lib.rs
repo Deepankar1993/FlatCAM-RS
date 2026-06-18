@@ -307,6 +307,8 @@ pub struct FlatCamApp {
     show_help: bool,
     /// Whether the measurement grid is drawn (View ▸ Show Grid).
     show_grid: bool,
+    /// Center-area tab: false = Plot Area, true = G-code view.
+    center_gcode: bool,
     cursor_world: Option<(f64, f64)>,
     theme: Theme,
     /// Theme last pushed to egui, so we only call `set_visuals` on a change.
@@ -1834,11 +1836,18 @@ impl FlatCamApp {
             });
         });
 
-        // --- "Plot Area" tab strip (stock FlatCAM has a tabbed plot view) ---
+        // --- center tab strip: Plot Area / G-code (stock FlatCAM tabbed view) ---
         egui::TopBottomPanel::top("plot_tabs").show(ctx, |ui| {
+            let has_gcode = self.current_gcode().is_some();
             ui.horizontal(|ui| {
-                ui.add(egui::Label::new(egui::RichText::new("Plot Area").strong()).sense(egui::Sense::hover()));
+                ui.selectable_value(&mut self.center_gcode, false, "Plot Area");
+                ui.add_enabled_ui(has_gcode, |ui| {
+                    ui.selectable_value(&mut self.center_gcode, true, "G-code");
+                });
             });
+            if !has_gcode {
+                self.center_gcode = false;
+            }
         });
 
         // --- left notebook: Project / Properties / Plugin (stock-FlatCAM layout) ---
@@ -1899,6 +1908,30 @@ impl FlatCamApp {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            // G-code tab: show the generated program text instead of the plot.
+            if self.center_gcode {
+                match self.current_gcode() {
+                    Some(text) => {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{} lines", text.lines().count()));
+                            if ui.button("Save G-code…").clicked() {
+                                self.save_gcode();
+                            }
+                        });
+                        ui.separator();
+                        egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
+                            ui.monospace(text);
+                        });
+                    }
+                    None => {
+                        ui.centered_and_justified(|ui| {
+                            ui.weak("No G-code yet — run a CAM op or select a CNCJob.");
+                        });
+                    }
+                }
+                return;
+            }
+
             let pal = self.theme.palette();
             let (response, painter) = ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
             let rect = response.rect;
@@ -1982,10 +2015,14 @@ impl FlatCamApp {
                 let Some(s) = self.store.get(&obj.name) else { continue };
                 let color = s.color;
                 let is_sel = sel.as_deref() == Some(obj.name.as_str());
+                let is_edge = {
+                    let n = obj.name.to_lowercase();
+                    n.contains("edge") || n.contains("outline") || n.contains("profile")
+                };
                 // Opaque fill (one batched mesh) — solid copper/regions. Unselected
                 // layers keep a hair of transparency so an underlying layer hints
                 // through; the selected layer is fully opaque.
-                if self.fill_on && !s.fill.is_empty() {
+                if self.fill_on && !s.fill.is_empty() && !is_edge {
                     let a = if is_sel { 255 } else { 210 };
                     let fill = egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), a);
                     let mut mesh = egui::Mesh::default();
@@ -1998,17 +2035,27 @@ impl FlatCamApp {
                     }
                     painter.add(egui::Shape::mesh(mesh));
                 }
-                // Crisp outline in a darker shade so tracks/pads have defined edges
-                // on top of the opaque fill (bright accent when selected).
-                let edge = if is_sel { color } else { darken(color, 0.55) };
-                let stroke = egui::Stroke::new(if is_sel { 1.8 } else { 1.0 }, edge);
+                // Outline. The board edge draws as a bright RED DASHED loop (stock
+                // FlatCAM); other layers use a darker shade of the fill for crisp
+                // edges (bright accent when selected).
+                let stroke = if is_edge {
+                    egui::Stroke::new(1.6, color)
+                } else {
+                    egui::Stroke::new(if is_sel { 1.8 } else { 1.0 }, if is_sel { color } else { darken(color, 0.55) })
+                };
                 for (ring, closed) in &s.rings {
                     if ring.len() == 1 {
                         painter.circle_stroke(self.camera.to_screen(ring[0], rect), 2.0, stroke);
                         continue;
                     }
                     let pts: Vec<egui::Pos2> = ring.iter().map(|&p| self.camera.to_screen(p, rect)).collect();
-                    if *closed && pts.len() >= 3 {
+                    if is_edge {
+                        if *closed {
+                            widgets::dashed_closed(&painter, &pts, stroke, 8.0, 5.0);
+                        } else {
+                            widgets::dashed_line(&painter, &pts, stroke, 8.0, 5.0);
+                        }
+                    } else if *closed && pts.len() >= 3 {
                         painter.add(egui::Shape::closed_line(pts, stroke));
                     } else {
                         painter.add(egui::Shape::line(pts, stroke));
@@ -2026,6 +2073,8 @@ impl FlatCamApp {
                         let cen = self.camera.to_screen((sx / n, sy / n), rect);
                         painter.line_segment([egui::pos2(cen.x - 5.0, cen.y), egui::pos2(cen.x + 5.0, cen.y)], cross);
                         painter.line_segment([egui::pos2(cen.x, cen.y - 5.0), egui::pos2(cen.x, cen.y + 5.0)], cross);
+                        // Yellow centre dot (drill-target look from the reference).
+                        painter.circle_filled(cen, 1.7, egui::Color32::from_rgb(255, 216, 80));
                     }
                 }
             }
