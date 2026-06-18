@@ -2,6 +2,20 @@
 
 All notable changes to the Rust port are recorded here.
 
+## [0.16.0] — QR, script edit commands, paste/toolchange dialects
+
+### Added
+- **`fc-qr`** (new crate) — QR-code → geometry generator on the verified
+  `qrcode` 0.14 API (dark modules → merged square blocks). 4 tests.
+- **`fc-script::edit_cmds`** — etch / copper_pour / fiducials / thermal commands
+  (28 script commands total now).
+- **`fc-gcode::dialects_paste`** — SolderPaste dispenser + ToolchangeManual
+  preprocessors, chained into `dialects::by_name` (16 dialects total).
+
+### Verified
+- `qrcode` API confirmed from crate source before implementation.
+- `cargo test --workspace`: 417 passed, 0 warnings. 14 crates.
+
 ## [0.15.0] — engine + scripting expansion (7-module batch)
 
 7 modules authored by agents in parallel, integrated green.

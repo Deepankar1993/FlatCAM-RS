@@ -62,7 +62,7 @@ Group B/C tools — moderate compute, no new subsystems.
 - ✅ Geometry arrays + extra shapes — `fc-cam::array`, `fc-geo::shapes`
 - ✅ G-code reader (text → job) — `fc-gcode::parse_gcode`
 - ✅ Solder-paste dispense paths — `fc-cam::solderpaste`
-- ⬜ QR code — needs a `qrcode` dependency (deferred)
+- ✅ QR code — `fc-qr` (qrcode 0.14 → geometry)
 
 ## Phase 4 — Additional parsers ⬜
 

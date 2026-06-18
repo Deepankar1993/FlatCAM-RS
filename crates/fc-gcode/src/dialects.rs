@@ -187,7 +187,8 @@ pub fn by_name(name: &str) -> Option<Box<dyn Preprocessor>> {
         "roland" | "roland_mdx" => Some(Box::new(RolandMDX)),
         // Fall back to the extended dialect registries.
         other => crate::dialects_extra::by_name_extra(other)
-            .or_else(|| crate::dialects_more::by_name_more(other)),
+            .or_else(|| crate::dialects_more::by_name_more(other))
+            .or_else(|| crate::dialects_paste::by_name_paste(other)),
     }
 }
 

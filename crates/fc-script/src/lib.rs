@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 
 mod analyze_cmds;
 mod cam;
+mod edit_cmds;
 mod gen;
 mod geo_ops;
 mod io;
@@ -120,6 +121,7 @@ impl Registry {
             gen::commands(),
             transform_cmds::commands(),
             analyze_cmds::commands(),
+            edit_cmds::commands(),
         ] {
             for (name, f) in group {
                 map.insert(name, f);

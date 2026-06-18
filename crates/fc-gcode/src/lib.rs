@@ -14,6 +14,7 @@ use std::fmt::Write as _;
 pub mod dialects;
 pub mod dialects_extra;
 pub mod dialects_more;
+pub mod dialects_paste;
 pub mod reader;
 pub use reader::parse_gcode;
 
