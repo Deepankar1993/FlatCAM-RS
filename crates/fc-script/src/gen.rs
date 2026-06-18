@@ -25,6 +25,9 @@ fn new_rect(ctx: &mut ScriptContext, args: &[String]) -> Result<String, ScriptEr
     let y = farg(args, 2, USAGE)?;
     let w = farg(args, 3, USAGE)?;
     let h = farg(args, 4, USAGE)?;
+    if !(w > 0.0) || !(h > 0.0) {
+        return Err(ScriptError::Other("new_rect: width and height must be positive".into()));
+    }
 
     let poly = fc_geo::centered_rect(x + w / 2.0, y + h / 2.0, w, h);
     let mp = fc_geo::MultiPolygon::new(vec![poly]);
@@ -39,6 +42,9 @@ fn new_circle(ctx: &mut ScriptContext, args: &[String]) -> Result<String, Script
     let cx = farg(args, 1, USAGE)?;
     let cy = farg(args, 2, USAGE)?;
     let r = farg(args, 3, USAGE)?;
+    if !(r > 0.0) {
+        return Err(ScriptError::Other("new_circle: radius must be positive".into()));
+    }
 
     let poly = fc_geo::circle(cx, cy, r, 48);
     let mp = fc_geo::MultiPolygon::new(vec![poly]);

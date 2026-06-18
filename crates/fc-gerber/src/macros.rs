@@ -247,7 +247,14 @@ impl<'a> ExprParser<'a> {
         while let Some(t) = self.peek() {
             match t {
                 Tok::Mul => { self.next(); v *= self.factor(); }
-                Tok::Div => { self.next(); v /= self.factor(); }
+                Tok::Div => {
+                    self.next();
+                    let d = self.factor();
+                    // Avoid producing inf/NaN geometry from a zero divisor.
+                    if d != 0.0 {
+                        v /= d;
+                    }
+                }
                 _ => break,
             }
         }

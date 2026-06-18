@@ -117,6 +117,7 @@ pub fn parse(text: &str) -> Result<SvgDoc, SvgError> {
 }
 
 fn ellipse(cx: f64, cy: f64, rx: f64, ry: f64, steps: usize) -> Polygon<f64> {
+    let steps = steps.max(3);
     let mut ring = Vec::with_capacity(steps + 1);
     for i in 0..steps {
         let a = std::f64::consts::TAU * (i as f64) / (steps as f64);

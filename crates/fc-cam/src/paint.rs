@@ -65,7 +65,7 @@ pub fn paint_region(region: &MultiPolygon<f64>, p: &PaintParams) -> Vec<Polyline
         .par_iter()
         .flat_map_iter(|&(k, y)| {
             let mut xs = scanline_x(&rings, y);
-            xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             let flip = k % 2 == 1;
             let mut row: Vec<Polyline> = Vec::new();
             for span in xs.chunks(2) {

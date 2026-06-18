@@ -256,6 +256,10 @@ impl Parser {
 
     fn parse_ad(&mut self, s: &str) {
         // ADD<code><template>[,<mods>]
+        // Guard against malformed short tokens (e.g. "%AD%") so slicing can't panic.
+        if s.len() < 3 {
+            return;
+        }
         let body = &s[3..]; // strip "ADD"
         // code is leading digits
         let code_len = body.chars().take_while(|c| c.is_ascii_digit()).count();
@@ -745,6 +749,13 @@ M02*
         let g = parse(src).unwrap();
         let a = area(&g.solid_geometry);
         assert!((a - 6.0).abs() < 1e-3, "rect area {a}");
+    }
+
+    #[test]
+    fn malformed_ad_token_does_not_panic() {
+        // A short/garbled aperture-definition token must not panic the parser.
+        let src = "%FSLAX24Y24*%\n%MOMM*%\n%AD*%\n%ADD*%\nM02*\n";
+        let _ = parse(src); // just must not panic
     }
 
     #[test]

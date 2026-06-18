@@ -21,7 +21,10 @@ use std::fmt::Write as _;
 /// (value scaled by 10^4, leading zeros suppressed). A leading `-` is kept for
 /// negatives; zero encodes as `"0"`.
 fn encode_coord(v: f64) -> String {
-    let scaled = (v * 10_000.0).round() as i64;
+    if !v.is_finite() {
+        return "0".to_string();
+    }
+    let scaled = (v * 10_000.0).round() as i64; // `as` saturates on overflow
     scaled.to_string()
 }
 

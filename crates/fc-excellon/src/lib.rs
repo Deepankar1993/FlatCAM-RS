@@ -59,6 +59,10 @@ impl Excellon {
         let Some(t) = self.tools.get(&tool) else {
             return MultiPolygon::new(vec![]);
         };
+        // A non-positive/non-finite diameter (malformed tool def) yields no geometry.
+        if !(t.diameter > 0.0) {
+            return MultiPolygon::new(vec![]);
+        }
         let r = t.diameter / 2.0;
         let mut polys = Vec::new();
         for &(x, y) in &t.drills {

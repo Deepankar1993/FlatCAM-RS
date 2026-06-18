@@ -86,7 +86,7 @@ impl GCodeEditor {
             }
             let stripped = strip_line_number(line);
             *line = format!("N{} {}", num, stripped);
-            num = num.wrapping_add(step);
+            num = num.saturating_add(step);
         }
     }
 

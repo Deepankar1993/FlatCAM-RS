@@ -33,7 +33,12 @@ pub fn v_bit_cut_width(depth: f64, tip_dia: f64, angle_deg: f64) -> f64 {
 /// `depth = (width - tip_dia) / (2 * tan((angle/2) in radians))`
 pub fn v_bit_depth_for_width(width: f64, tip_dia: f64, angle_deg: f64) -> f64 {
     let half_angle_rad = (angle_deg / 2.0).to_radians();
-    (width - tip_dia) / (2.0 * half_angle_rad.tan())
+    let denom = 2.0 * half_angle_rad.tan();
+    // Degenerate angles (0/180/360°) give a zero/non-finite slope -> no depth.
+    if denom.abs() < 1e-12 || !denom.is_finite() {
+        return 0.0;
+    }
+    (width - tip_dia) / denom
 }
 
 /// Estimate electroplating time, in minutes, to deposit a copper layer of a
