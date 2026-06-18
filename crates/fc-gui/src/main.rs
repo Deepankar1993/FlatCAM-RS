@@ -583,14 +583,21 @@ impl FlatCamApp {
         self.status = format!("Deleted {sel}");
     }
 
-    /// Open a file picker, optionally filtered, and load the chosen file.
+    /// Open a multi-select file picker, optionally filtered, and load every
+    /// chosen file (Gerber/Excellon boards usually come as several files).
     fn open_file_dialog(&mut self, filter_name: &str, exts: &[&str]) {
         let mut dlg = rfd::FileDialog::new();
         if !exts.is_empty() {
             dlg = dlg.add_filter(filter_name, exts);
         }
-        if let Some(path) = dlg.pick_file() {
-            self.load_path(&path.to_string_lossy());
+        if let Some(paths) = dlg.pick_files() {
+            let n = paths.len();
+            for path in &paths {
+                self.load_path(&path.to_string_lossy());
+            }
+            if n > 1 {
+                self.status = format!("Loaded {n} files");
+            }
         }
     }
 
@@ -1366,9 +1373,7 @@ impl eframe::App for FlatCamApp {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("Open…").clicked() {
-                        if let Some(path) = rfd::FileDialog::new().pick_file() {
-                            self.load_path(&path.to_string_lossy());
-                        }
+                        self.open_file_dialog("", &[]);
                         ui.close_menu();
                     }
                     if ui.button("Open Project").clicked() {
