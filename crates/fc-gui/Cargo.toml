@@ -18,5 +18,6 @@ fc-editor = { path = "../fc-editor" }
 fc-svg = { path = "../fc-svg" }
 fc-dxf = { path = "../fc-dxf" }
 fc-pdf = { path = "../fc-pdf" }
+fc-laser = { path = "../fc-laser" }
 eframe = "0.29"
 rfd = "0.15"

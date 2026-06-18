@@ -29,6 +29,8 @@ fn main() -> eframe::Result<()> {
         Box::new(move |_cc| {
             let mut app = FlatCamApp::default();
             app.fill_on = true;
+            app.laser_kerf = true;
+            app.laser_dynamic = true;
             if let Some(path) = initial {
                 app.load_path(&path);
             }
@@ -149,6 +151,13 @@ struct FlatCamApp {
     show_settings: bool,
     show_gcode: bool,
     cursor_world: Option<(f64, f64)>,
+    // --- laser ---
+    beam: fc_laser::BeamShape,
+    laser_kerf: bool,
+    laser_dynamic: bool,
+    show_burn: bool,
+    burn_tex: Option<egui::TextureHandle>,
+    burn_rect: Option<(f64, f64, f64, f64)>,
     // editor
     editor: Editor,
     edit_tool: EditTool,
@@ -456,6 +465,86 @@ impl FlatCamApp {
         self.status = format!("{op} applied to {sel}");
     }
 
+    /// Beam-shape-compensated laser isolation of the selected region.
+    fn run_laser_iso(&mut self) {
+        let Some((geom, units, src)) = self.selected_region() else {
+            self.status = "Select a Gerber/Geometry region first".into();
+            return;
+        };
+        let passes = self.params.passes.max(1) as usize;
+        let pwr = fc_laser::laser_isolation(&geom, &self.beam, passes, self.params.overlap, self.laser_kerf);
+        let jp = fc_gcode::JobParams { units, ..Default::default() };
+        let gcode = fc_laser::laser_gcode(&pwr, &jp, self.laser_dynamic);
+        let paths: Vec<Polyline> =
+            pwr.iter().map(|r| r.iter().map(|&(x, y, _)| (x, y)).collect()).collect();
+        self.last_gcode = Some(gcode.clone());
+        let keep = self.project.selected.clone();
+        let name = self.add_object(
+            &format!("{src}_laser"),
+            ObjectKind::CncJob,
+            units,
+            StoredGeom::Cnc(paths),
+            Some(src.clone()),
+            None,
+        );
+        if let Some(o) = self.store.get_mut(&name) {
+            o.gcode = Some(gcode);
+        }
+        self.project.selected = keep;
+        self.status = format!(
+            "laser-iso: {} paths, beam {:.2}×{:.2} @ {:.0}° (kerf-comp {})",
+            pwr.len(), self.beam.width_x, self.beam.width_y, self.beam.angle_deg, self.laser_kerf
+        );
+    }
+
+    fn optimize_fill(&mut self) {
+        let Some((geom, _, _)) = self.selected_region() else {
+            self.status = "Select a region first".into();
+            return;
+        };
+        let spacing = self.beam.min_extent().max(0.1);
+        let (angle, cv) = fc_laser::optimal_fill_angle(&geom, &self.beam, spacing, 800.0, 1.0);
+        self.status = format!("Best fill angle: {angle:.0}° (burn-uniformity CV {cv:.3})");
+    }
+
+    /// Build a burn-heatmap texture for the selected CNCJob's paths.
+    fn compute_burn(&mut self, ctx: &egui::Context) {
+        let Some(sel) = self.project.selected.clone() else { return };
+        let paths = match self.store.get(&sel) {
+            Some(StoredObj { geom: StoredGeom::Cnc(p), .. }) => p.clone(),
+            _ => {
+                self.status = "Select a CNCJob (run Laser Iso) for burn preview".into();
+                return;
+            }
+        };
+        let cell = self.beam.max_extent().max(0.12);
+        let map = fc_laser::simulate(&paths, &self.beam, 800.0, 1.0, cell);
+        if map.cols == 0 || map.rows == 0 {
+            return;
+        }
+        let max = map.max().max(1e-9);
+        let mut px = vec![egui::Color32::TRANSPARENT; map.cols * map.rows];
+        for row in 0..map.rows {
+            for col in 0..map.cols {
+                let f = (map.at(col, row) / max).clamp(0.0, 1.0);
+                if f > 0.0 {
+                    // dark-red -> yellow heatmap; alpha grows with fluence.
+                    let r = 255u8;
+                    let g = (255.0 * f) as u8;
+                    let a = (60.0 + 180.0 * f) as u8;
+                    // image is y-down; flip so row 0 is world max-y (top).
+                    px[(map.rows - 1 - row) * map.cols + col] = egui::Color32::from_rgba_unmultiplied(r, g, 0, a);
+                }
+            }
+        }
+        let img = egui::ColorImage { size: [map.cols, map.rows], pixels: px };
+        let tex = ctx.load_texture("burn", img, egui::TextureOptions::NEAREST);
+        self.burn_rect = Some((map.min_x, map.min_y, map.min_x + map.cols as f64 * map.cell, map.min_y + map.rows as f64 * map.cell));
+        self.burn_tex = Some(tex);
+        self.show_burn = true;
+        self.status = "Burn preview updated".into();
+    }
+
     /// Copy persisted preferences into the active CAM parameters.
     fn apply_prefs(&mut self) {
         self.params.tool_dia = self.prefs.default_tool_dia;
@@ -734,6 +823,29 @@ impl eframe::App for FlatCamApp {
                 });
             ui.separator();
             self.draw_editor_panel(ui);
+            ui.separator();
+            egui::CollapsingHeader::new("Laser (diode beam)").show(ui, |ui| {
+                ui.add(egui::Slider::new(&mut self.beam.width_x, 0.02..=1.0).text("Beam X"));
+                ui.add(egui::Slider::new(&mut self.beam.width_y, 0.02..=1.0).text("Beam Y"));
+                ui.add(egui::Slider::new(&mut self.beam.angle_deg, 0.0..=180.0).text("Beam angle"));
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.laser_kerf, "Kerf comp");
+                    ui.checkbox(&mut self.laser_dynamic, "M4 dyn");
+                });
+                if ui.button("Laser Iso").clicked() {
+                    self.run_laser_iso();
+                }
+                ui.horizontal(|ui| {
+                    if ui.button("Optimize fill∠").clicked() {
+                        self.optimize_fill();
+                    }
+                    if ui.button("Burn preview").clicked() {
+                        let ctx = ui.ctx().clone();
+                        self.compute_burn(&ctx);
+                    }
+                });
+                ui.checkbox(&mut self.show_burn, "Show burn");
+            });
         });
 
         egui::SidePanel::right("props").resizable(true).default_width(220.0).show(ctx, |ui| {
@@ -822,6 +934,17 @@ impl eframe::App for FlatCamApp {
                     if *closed && pts.len() >= 3 {
                         painter.line_segment([pts[pts.len() - 1], pts[0]], stroke);
                     }
+                }
+            }
+
+            // Laser burn-heatmap overlay (the visual optimization view).
+            if self.show_burn {
+                if let (Some(tex), Some((minx, miny, maxx, maxy))) = (&self.burn_tex, self.burn_rect) {
+                    let tl = self.camera.to_screen((minx, maxy), rect); // world max-y = screen top
+                    let br = self.camera.to_screen((maxx, miny), rect);
+                    let img_rect = egui::Rect::from_two_pos(tl, br);
+                    let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                    painter.image(tex.id(), img_rect, uv, egui::Color32::WHITE);
                 }
             }
 

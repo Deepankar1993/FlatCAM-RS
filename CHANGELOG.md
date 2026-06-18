@@ -2,6 +2,19 @@
 
 All notable changes to the Rust port are recorded here.
 
+## [0.24.0] — GUI laser plugin (beam panel + burn-heatmap preview)
+
+### Added (GUI)
+- **Laser panel**: beam X/Y/angle, kerf-compensation + M4-dynamic toggles, a
+  **Laser Iso** button (beam-compensated isolation → a CNCJob with per-segment
+  power G-code), and an **Optimize fill∠** button (reports the lowest-burn-
+  variance hatch angle).
+- **Burn preview**: a GPU **heatmap overlay** (`fc-laser::simulate` → texture)
+  showing predicted directional over/under-burn — the visual optimization view.
+
+### Verified
+- `cargo test --workspace`: 509 passed, 0 warnings; release `flatcam-gui` builds.
+
 ## [0.23.0] — diode-laser beam-shape compensation (fc-laser)
 
 A new subsystem for low-cost diode lasers whose spot is **elliptical, not

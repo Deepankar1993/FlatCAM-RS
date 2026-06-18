@@ -1340,6 +1340,7 @@ dependencies = [
  "fc-gcode",
  "fc-geo",
  "fc-gerber",
+ "fc-laser",
  "fc-pdf",
  "fc-svg",
  "rfd",
