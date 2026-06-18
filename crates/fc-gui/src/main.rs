@@ -66,8 +66,72 @@ struct StoredObj {
     geom: StoredGeom,
     /// Cached fill triangles (region kinds only), for filled rendering.
     fill: Vec<[(f64, f64); 3]>,
+    /// Cached outline rings `(points, closed)` — built ONCE here, not per frame.
+    /// Rebuilding these every frame for several real Gerbers froze the UI.
+    rings: Vec<(Vec<(f64, f64)>, bool)>,
+    /// Per-object render colour (distinct per PCB layer, not one shared green).
+    color: egui::Color32,
     /// G-code for CNCJob objects (the result of a CAM op).
     gcode: Option<String>,
+}
+
+/// A distinct PCB-style render colour for a layer, inferred from its name/kind,
+/// so stacked layers are readable instead of one flat green flood.
+fn layer_color(name: &str, kind: ObjectKind) -> egui::Color32 {
+    let c = egui::Color32::from_rgb;
+    if matches!(kind, ObjectKind::Excellon) {
+        return c(150, 150, 160);
+    }
+    if matches!(kind, ObjectKind::CncJob) {
+        return c(80, 180, 255);
+    }
+    let n = name.to_lowercase();
+    if n.contains("edge") || n.contains("outline") || n.contains("profile") {
+        c(232, 200, 64) // board edge — yellow
+    } else if n.contains("mask") {
+        c(60, 150, 95) // soldermask — green
+    } else if n.contains("silk") {
+        c(222, 222, 228) // silkscreen — off-white
+    } else if n.contains("paste") {
+        c(170, 170, 180) // paste — grey
+    } else if n.contains("b_cu") || n.contains("b.cu") || n.contains("bottom") {
+        c(72, 132, 220) // bottom copper — blue
+    } else if n.contains("cu") || n.contains("copper") || n.contains("f_cu") || n.contains("top") {
+        c(204, 122, 64) // top copper — orange
+    } else {
+        let (r, g, b) = fc_app::kind_color(kind);
+        c(r, g, b)
+    }
+}
+
+/// Build the outline rings `(points, closed)` for an object's geometry. Done
+/// once at construction and cached on [`StoredObj`] (the render loop and
+/// `all_bounds` must never recompute this per frame).
+fn build_rings(geom: &StoredGeom) -> Vec<(Vec<(f64, f64)>, bool)> {
+    let mut out = Vec::new();
+    match geom {
+        StoredGeom::Region(mp) => {
+            for ring in rings_of(mp) {
+                out.push((ring, true));
+            }
+        }
+        StoredGeom::Excellon(e) => {
+            for tool in e.tools.values() {
+                for &(x, y) in &tool.drills {
+                    out.push((circle_ring(x, y, tool.diameter / 2.0, 20), true));
+                }
+                for &(a, bb) in &tool.slots {
+                    out.push((vec![a, bb], false));
+                }
+            }
+        }
+        StoredGeom::Cnc(paths) => {
+            for p in paths {
+                out.push((p.clone(), false));
+            }
+        }
+    }
+    out
 }
 
 fn make_stored(kind: ObjectKind, units: Units, geom: StoredGeom) -> StoredObj {
@@ -75,7 +139,9 @@ fn make_stored(kind: ObjectKind, units: Units, geom: StoredGeom) -> StoredObj {
         StoredGeom::Region(mp) => fc_geo::triangulate(mp),
         _ => Vec::new(),
     };
-    StoredObj { kind, units, geom, fill, gcode: None }
+    let rings = build_rings(&geom);
+    let (r, g, b) = fc_app::kind_color(kind);
+    StoredObj { kind, units, geom, fill, rings, color: egui::Color32::from_rgb(r, g, b), gcode: None }
 }
 
 // ----- camera -----
@@ -278,7 +344,9 @@ impl FlatCamApp {
         obj.parent = parent;
         obj.source_path = source;
         let _ = self.project.add(obj);
-        self.store.insert(name.clone(), make_stored(kind, units, geom));
+        let mut stored = make_stored(kind, units, geom);
+        stored.color = layer_color(&name, kind);
+        self.store.insert(name.clone(), stored);
         self.project.selected = Some(name.clone());
         self.camera.initialized = false;
         name
@@ -310,17 +378,34 @@ impl FlatCamApp {
         }
     }
 
-    fn load_path(&mut self, path: &str) {
-        let base = std::path::Path::new(path)
+    fn base_name(path: &str) -> String {
+        std::path::Path::new(path)
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("object")
-            .to_string();
+            .to_string()
+    }
+
+    /// Register an already-parsed object: add the project node, assign its layer
+    /// colour, store it, and select it. Returns the (deduplicated) name.
+    fn insert_stored(&mut self, base: &str, mut stored: StoredObj, source: Option<String>) -> String {
+        let name = self.project.unique_name(base);
+        let mut obj = ProjectObject::new(name.clone(), stored.kind);
+        obj.source_path = source;
+        let _ = self.project.add(obj);
+        stored.color = layer_color(&name, stored.kind);
+        self.store.insert(name.clone(), stored);
+        self.project.selected = Some(name.clone());
+        self.camera.initialized = false;
+        name
+    }
+
+    fn load_path(&mut self, path: &str) {
+        let base = Self::base_name(path);
         match Self::parse_file(path) {
             Some(obj) => {
                 let kind = obj.kind;
-                let units = obj.units;
-                let name = self.add_object(&base, kind, units, obj.geom, None, Some(path.to_string()));
+                let name = self.insert_stored(&base, obj, Some(path.to_string()));
                 self.status = format!("Loaded {name} ({:?})", kind);
             }
             None => self.status = format!("Failed to load {path} (parse error or unreadable)"),
@@ -560,6 +645,8 @@ impl FlatCamApp {
                     units: s.units,
                     geom: clone_geom(&s.geom),
                     fill: s.fill.clone(),
+                    rings: s.rings.clone(),
+                    color: s.color,
                     gcode: s.gcode.clone(),
                 };
                 self.store.insert(n, clone);
@@ -591,12 +678,35 @@ impl FlatCamApp {
             dlg = dlg.add_filter(filter_name, exts);
         }
         if let Some(paths) = dlg.pick_files() {
-            let n = paths.len();
-            for path in &paths {
-                self.load_path(&path.to_string_lossy());
+            // Parse (and triangulate) all files in PARALLEL across CPU cores —
+            // serial parsing of several real Gerbers took minutes on the UI
+            // thread. parse_file is a pure static fn and StoredObj is Send.
+            let parsed: Vec<(String, Option<StoredObj>)> = std::thread::scope(|sc| {
+                let handles: Vec<_> = paths
+                    .iter()
+                    .map(|p| {
+                        let s = p.to_string_lossy().to_string();
+                        sc.spawn(move || {
+                            let obj = Self::parse_file(&s);
+                            (s, obj)
+                        })
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            let mut ok = 0;
+            for (path, obj) in parsed {
+                match obj {
+                    Some(o) => {
+                        let base = Self::base_name(&path);
+                        self.insert_stored(&base, o, Some(path));
+                        ok += 1;
+                    }
+                    None => self.status = format!("Failed to load {path}"),
+                }
             }
-            if n > 1 {
-                self.status = format!("Loaded {n} files");
+            if ok > 0 {
+                self.status = format!("Loaded {ok} file(s)");
             }
         }
     }
@@ -992,41 +1102,12 @@ impl FlatCamApp {
 
     // ----- rendering helpers -----
 
-    fn object_rings(&self, obj: &StoredObj) -> (Vec<(Vec<(f64, f64)>, bool)>, egui::Color32) {
-        let (r, g, b) = fc_app::kind_color(obj.kind);
-        let color = egui::Color32::from_rgb(r, g, b);
-        let mut out = Vec::new();
-        match &obj.geom {
-            StoredGeom::Region(mp) => {
-                for ring in rings_of(mp) {
-                    out.push((ring, true));
-                }
-            }
-            StoredGeom::Excellon(e) => {
-                for tool in e.tools.values() {
-                    for &(x, y) in &tool.drills {
-                        out.push((circle_ring(x, y, tool.diameter / 2.0, 20), true));
-                    }
-                    for &(a, bb) in &tool.slots {
-                        out.push((vec![a, bb], false));
-                    }
-                }
-            }
-            StoredGeom::Cnc(paths) => {
-                for p in paths {
-                    out.push((p.clone(), false));
-                }
-            }
-        }
-        (out, color)
-    }
 
     fn all_bounds(&self) -> Option<(f64, f64, f64, f64)> {
         let mut b: Option<(f64, f64, f64, f64)> = None;
         for obj in self.project.objects.iter().filter(|o| o.visible) {
             if let Some(s) = self.store.get(&obj.name) {
-                let (rings, _) = self.object_rings(s);
-                for (ring, _) in &rings {
+                for (ring, _) in &s.rings {
                     for &(x, y) in ring {
                         b = Some(match b {
                             None => (x, y, x, y),
@@ -1651,18 +1732,27 @@ impl eframe::App for FlatCamApp {
                     continue;
                 }
                 let Some(s) = self.store.get(&obj.name) else { continue };
-                let (rings, color) = self.object_rings(s);
+                let color = s.color;
                 let is_sel = sel.as_deref() == Some(obj.name.as_str());
                 // Filled rendering (triangulated regions), drawn under outlines.
+                // Batch the whole layer into ONE mesh (was one Shape per triangle
+                // → thousands of shapes/frame) and use low alpha so stacked layers
+                // stay readable (no green flood).
                 if self.fill_on && !s.fill.is_empty() {
-                    let fill = egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 70);
+                    let a = if is_sel { 55 } else { 32 };
+                    let fill = egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), a);
+                    let mut mesh = egui::Mesh::default();
                     for tri in &s.fill {
-                        let p: Vec<egui::Pos2> = tri.iter().map(|&pt| self.camera.to_screen(pt, rect)).collect();
-                        painter.add(egui::Shape::convex_polygon(p, fill, egui::Stroke::NONE));
+                        let base = mesh.vertices.len() as u32;
+                        for &pt in tri {
+                            mesh.colored_vertex(self.camera.to_screen(pt, rect), fill);
+                        }
+                        mesh.add_triangle(base, base + 1, base + 2);
                     }
+                    painter.add(egui::Shape::mesh(mesh));
                 }
                 let stroke = egui::Stroke::new(if is_sel { 2.0 } else { 1.0 }, color);
-                for (ring, closed) in &rings {
+                for (ring, closed) in &s.rings {
                     if ring.len() == 1 {
                         painter.circle_stroke(self.camera.to_screen(ring[0], rect), 2.0, stroke);
                         continue;
@@ -1827,7 +1917,7 @@ impl FlatCamApp {
                 if ui.button("Dup").clicked() {
                     if let Some(n) = self.project.duplicate(&sel) {
                         if let Some(s) = self.store.get(&sel) {
-                            let clone = StoredObj { kind: s.kind, units: s.units, geom: clone_geom(&s.geom), fill: s.fill.clone(), gcode: s.gcode.clone() };
+                            let clone = StoredObj { kind: s.kind, units: s.units, geom: clone_geom(&s.geom), fill: s.fill.clone(), rings: s.rings.clone(), color: s.color, gcode: s.gcode.clone() };
                             self.store.insert(n, clone);
                         }
                     }
