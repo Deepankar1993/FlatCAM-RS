@@ -39,6 +39,9 @@ impl FlatCamApp {
         app.sim_power = 1.0;
         app.units_label = "mm".into();
         app.show_grid = true;
+        app.show_axis = true;
+        app.show_hud = true;
+        app.notebook_visible = true;
         // Default to the dark theme — the dark canvas reads far more "pro PCB
         // viewer" (KiCad/gerbview style); the light theme washed the layers out.
         app.theme = Theme::Dark;
@@ -221,6 +224,12 @@ impl Camera {
     }
 }
 
+/// A menu entry with right-aligned grey shortcut text (stock-FlatCAM style).
+/// Pass an empty `shortcut` for items without an accelerator.
+fn menu_item(ui: &mut egui::Ui, label: &str, shortcut: &str) -> egui::Response {
+    ui.add(egui::Button::new(label).shortcut_text(shortcut))
+}
+
 /// A vertical icon-over-label toolbar button drawn with vector [`icons`]
 /// (no emoji-font dependency). The whole 52×44 cell is clickable and shows a
 /// hover/active background from the active theme.
@@ -286,6 +295,46 @@ enum LeftTab {
     Project,
     Properties,
     Plugin,
+}
+
+/// A small modal that collects one or two numbers for an Edit/Options action
+/// that the stock app implements through a parameter dialog.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Dialog {
+    /// Translate the selection by (dx, dy).
+    NumMove,
+    /// Re-centre the view on (x, y).
+    Jump,
+    /// Shift the selection so (x, y) becomes the origin.
+    CustomOrigin,
+    /// Rotate the selection by `a` degrees about its centroid.
+    Rotate,
+    /// Skew the selection by `a` degrees on X about its centroid.
+    SkewX,
+    /// Skew the selection by `a` degrees on Y about its centroid.
+    SkewY,
+}
+
+impl Dialog {
+    fn title(self) -> &'static str {
+        match self {
+            Dialog::NumMove => "Numeric Move",
+            Dialog::Jump => "Jump to Location",
+            Dialog::CustomOrigin => "Custom Origin",
+            Dialog::Rotate => "Rotate Selection",
+            Dialog::SkewX => "Skew on X axis",
+            Dialog::SkewY => "Skew on Y axis",
+        }
+    }
+    /// Labels for the one or two numeric fields this dialog shows.
+    fn fields(self) -> &'static [&'static str] {
+        match self {
+            Dialog::NumMove => &["X offset", "Y offset"],
+            Dialog::Jump | Dialog::CustomOrigin => &["X", "Y"],
+            Dialog::Rotate => &["Angle (°)"],
+            Dialog::SkewX | Dialog::SkewY => &["Angle (°)"],
+        }
+    }
 }
 
 #[derive(Default)]
@@ -359,6 +408,30 @@ pub struct FlatCamApp {
     edit_size: f64,
     pending_path: Vec<(f64, f64)>,
     exc_selected: Option<(i32, usize)>,
+    // --- View-menu toggles ---
+    /// Draw the red origin axes (View ▸ Toggle Axis).
+    show_axis: bool,
+    /// Draw the on-canvas HUD overlay (View ▸ Toggle HUD).
+    show_hud: bool,
+    /// Draw the workspace sheet outline (View ▸ Toggle Workspace).
+    show_workspace: bool,
+    /// Left notebook panel visible (View ▸ Toggle Project/Properties/Tool).
+    notebook_visible: bool,
+    /// Maximise the plot area, hiding toolbar/tabs/notebook (View ▸ Toggle Plot Area).
+    plot_maximized: bool,
+    /// Window fullscreen state (View ▸ Toggle FullScreen).
+    fullscreen: bool,
+    /// Error/activity log window (View ▸ Error Log).
+    show_log: bool,
+    /// Accumulated activity log lines (newest last).
+    log: Vec<String>,
+    /// View-source window (Options ▸ View source).
+    show_source: bool,
+    /// Pending modal numeric dialog (Edit/Options actions needing parameters).
+    dialog: Option<Dialog>,
+    /// Two scratch values backing the active `dialog`.
+    dlg_a: f64,
+    dlg_b: f64,
 }
 
 fn map_gerber_units(u: fc_gerber::Units) -> Units {
@@ -1181,6 +1254,387 @@ impl FlatCamApp {
         self.camera.initialized = false;
     }
 
+    /// Set a single object's plot visibility (tree context menu Enable/Disable Plot).
+    fn set_object_visible(&mut self, name: &str, vis: bool) {
+        if let Some(o) = self.project.objects.iter_mut().find(|o| o.name == name) {
+            o.visible = vis;
+        }
+        self.camera.initialized = false;
+    }
+
+    /// Override an object's render colour (tree context menu Set Color ▸ …).
+    fn set_object_color(&mut self, name: &str, color: egui::Color32) {
+        if let Some(s) = self.store.get_mut(name) {
+            s.color = color;
+        }
+    }
+
+    /// Reset an object's colour to the auto-assigned per-layer default.
+    fn reset_object_color(&mut self, name: &str) {
+        let kind = self.store.get(name).map(|s| s.kind);
+        if let (Some(kind), Some(s)) = (kind, self.store.get_mut(name)) {
+            s.color = layer_color(name, kind);
+        }
+    }
+
+    /// The nine stock "Set Color" presets `(label, Color32)`.
+    fn color_presets() -> [(&'static str, egui::Color32); 9] {
+        let c = egui::Color32::from_rgb;
+        [
+            ("Red", c(220, 20, 60)),
+            ("Blue", c(30, 144, 255)),
+            ("Yellow", c(255, 215, 0)),
+            ("Green", c(34, 139, 34)),
+            ("Purple", c(138, 43, 226)),
+            ("Brown", c(139, 69, 19)),
+            ("Indigo", c(75, 0, 130)),
+            ("White", c(245, 245, 245)),
+            ("Black", c(20, 20, 20)),
+        ]
+    }
+
+    /// Build the object-specific section of a right-click menu (shared by the
+    /// canvas context menu and the project-tree context menu).
+    fn object_context_menu(&mut self, ui: &mut egui::Ui, name: &str) {
+        ui.label(egui::RichText::new(name).strong());
+        ui.separator();
+        if ui.button("Enable Plot").clicked() {
+            self.set_object_visible(name, true);
+            ui.close_menu();
+        }
+        if ui.button("Disable Plot").clicked() {
+            self.set_object_visible(name, false);
+            ui.close_menu();
+        }
+        ui.separator();
+        ui.menu_button("Set Color", |ui| {
+            for (label, color) in Self::color_presets() {
+                ui.horizontal(|ui| {
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 2.0, color);
+                    if ui.button(label).clicked() {
+                        self.set_object_color(name, color);
+                        ui.close_menu();
+                    }
+                });
+            }
+            ui.separator();
+            if ui.button("Default").clicked() {
+                self.reset_object_color(name);
+                ui.close_menu();
+            }
+        });
+        ui.separator();
+        if ui.button("View Source").clicked() {
+            self.project.select(name);
+            self.show_source = true;
+            ui.close_menu();
+        }
+        if ui.button("Edit").clicked() {
+            self.project.select(name);
+            self.edit_selected_object();
+            ui.close_menu();
+        }
+        if ui.button("Copy").clicked() {
+            self.project.select(name);
+            self.copy_selected();
+            ui.close_menu();
+        }
+        if ui.button("Delete").clicked() {
+            self.project.select(name);
+            self.delete_selected();
+            ui.close_menu();
+        }
+        if ui.button("Save").clicked() {
+            self.project.select(name);
+            self.save_gcode();
+            ui.close_menu();
+        }
+        ui.separator();
+        if ui.button("Properties").clicked() {
+            self.project.select(name);
+            self.left_tab = LeftTab::Properties;
+            ui.close_menu();
+        }
+    }
+
+    /// Show/hide every object EXCEPT the selected one (View ▸ Enable/Disable
+    /// non-selected). With no selection this behaves like enable/disable all.
+    fn set_other_visible(&mut self, vis: bool) {
+        let sel = self.project.selected.clone();
+        for o in self.project.objects.iter_mut() {
+            if Some(&o.name) != sel.as_ref() {
+                o.visible = vis;
+            }
+        }
+        self.camera.initialized = false;
+    }
+
+    // ----- file/object lifecycle -----
+
+    /// Clear the project and runtime store back to an empty document.
+    fn new_project(&mut self) {
+        self.project = Project::default();
+        self.store.clear();
+        self.last_gcode = None;
+        self.editor = Editor::None;
+        self.camera.initialized = false;
+        self.center_gcode = false;
+        self.log_msg("New project".into());
+    }
+
+    /// Create a new empty object of the given kind (File ▸ New ▸ …). It starts
+    /// with no geometry — the editors / CAM tools populate it.
+    fn new_empty_object(&mut self, kind: ObjectKind) {
+        let base = match kind {
+            ObjectKind::Gerber => "new_grb",
+            ObjectKind::Excellon => "new_exc",
+            ObjectKind::Geometry => "new_geo",
+            ObjectKind::Document => "document",
+            _ => "new_obj",
+        };
+        let name = self.add_object(base, kind, Units::Mm, StoredGeom::Region(MultiPolygon::new(vec![])), None, None);
+        self.log_msg(format!("New {kind:?} object: {name}"));
+    }
+
+    /// Leave the active editor without baking (Edit ▸ Exit Editor).
+    fn exit_editor(&mut self) {
+        if self.editor_active() {
+            self.editor = Editor::None;
+            self.pending_path.clear();
+            self.log_msg("Exited editor".into());
+        } else {
+            self.status = "No editor is active".into();
+        }
+    }
+
+    /// Open the appropriate object editor for the current selection (Edit ▸ Edit Object).
+    fn edit_selected_object(&mut self) {
+        let kind = self.project.selected.as_ref().and_then(|n| self.store.get(n)).map(|s| s.kind);
+        match kind {
+            Some(ObjectKind::Gerber) => self.start_editor("gerber"),
+            Some(ObjectKind::Excellon) => self.start_editor("exc"),
+            Some(_) => self.start_editor("geo"),
+            None => self.status = "Select an object to edit".into(),
+        }
+    }
+
+    /// Re-kind the selected region object (Edit ▸ Conversion ▸ Convert Any to …).
+    /// Geometry is preserved; only the object's classification (and render colour)
+    /// changes, matching the common case of the stock converters.
+    fn convert_selected(&mut self, to: ObjectKind) {
+        let Some(sel) = self.project.selected.clone() else {
+            self.status = "Select an object to convert".into();
+            return;
+        };
+        let (units, mp) = match self.store.get(&sel) {
+            Some(StoredObj { units, geom: StoredGeom::Region(mp), .. }) => (*units, mp.clone()),
+            _ => {
+                self.status = "Conversion needs a region object (Gerber/Geometry/SVG)".into();
+                return;
+            }
+        };
+        if let Some(o) = self.project.objects.iter_mut().find(|o| o.name == sel) {
+            o.kind = to;
+        }
+        let mut stored = make_stored(to, units, StoredGeom::Region(mp));
+        stored.color = layer_color(&sel, to);
+        self.store.insert(sel.clone(), stored);
+        self.camera.initialized = false;
+        self.log_msg(format!("Converted {sel} → {to:?}"));
+    }
+
+    // ----- view helpers -----
+
+    /// Multiply the camera zoom (View ▸ Zoom In/Out).
+    fn zoom_by(&mut self, factor: f32) {
+        self.camera.scale = (self.camera.scale * factor).clamp(1e-4, 1e6);
+    }
+
+    /// Toggle window fullscreen via a viewport command.
+    fn toggle_fullscreen(&mut self, ctx: &egui::Context) {
+        self.fullscreen = !self.fullscreen;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+    }
+
+    // ----- region transforms (Edit/Options) -----
+
+    /// Apply a geometry closure to the selected region object, rebuilding caches.
+    fn map_selected_region(&mut self, label: &str, f: impl FnOnce(&MultiPolygon<f64>) -> MultiPolygon<f64>) {
+        let Some(sel) = self.project.selected.clone() else {
+            self.status = "Select an object first".into();
+            return;
+        };
+        let (kind, units, mp) = match self.store.get(&sel) {
+            Some(StoredObj { kind, units, geom: StoredGeom::Region(mp), .. }) => (*kind, *units, mp.clone()),
+            _ => {
+                self.status = "Select a region object (Gerber/Geometry/SVG) first".into();
+                return;
+            }
+        };
+        let new_mp = f(&mp);
+        let mut stored = make_stored(kind, units, StoredGeom::Region(new_mp));
+        stored.color = layer_color(&sel, kind);
+        self.store.insert(sel.clone(), stored);
+        self.camera.initialized = false;
+        self.log_msg(format!("{label} → {sel}"));
+    }
+
+    /// Centroid of the selected region (origin for rotate/skew), else (0,0).
+    fn selected_centroid(&self) -> (f64, f64) {
+        self.project
+            .selected
+            .as_ref()
+            .and_then(|n| self.store.get(n))
+            .and_then(|s| match &s.geom {
+                StoredGeom::Region(mp) => fc_geo::geom_utils::centroid(mp),
+                _ => None,
+            })
+            .unwrap_or((0.0, 0.0))
+    }
+
+    // ----- dialogs / logging -----
+
+    /// Open a numeric-parameter modal, seeding sensible defaults.
+    fn open_dialog(&mut self, d: Dialog) {
+        self.dialog = Some(d);
+        self.dlg_a = if d == Dialog::Rotate { 90.0 } else { 0.0 };
+        self.dlg_b = 0.0;
+    }
+
+    /// Commit the active numeric dialog's action.
+    fn apply_dialog(&mut self) {
+        let Some(d) = self.dialog.take() else { return };
+        let (a, b) = (self.dlg_a, self.dlg_b);
+        match d {
+            Dialog::NumMove => self.map_selected_region("Move", |mp| fc_geo::transform::translate(mp, a, b)),
+            Dialog::CustomOrigin => {
+                self.map_selected_region("Custom origin", |mp| fc_geo::transform::translate(mp, -a, -b))
+            }
+            Dialog::Rotate => {
+                let o = self.selected_centroid();
+                self.map_selected_region("Rotate", |mp| fc_geo::transform::rotate(mp, a, o));
+            }
+            Dialog::SkewX => {
+                let o = self.selected_centroid();
+                self.map_selected_region("Skew X", |mp| fc_geo::transform::skew(mp, a, 0.0, o));
+            }
+            Dialog::SkewY => {
+                let o = self.selected_centroid();
+                self.map_selected_region("Skew Y", |mp| fc_geo::transform::skew(mp, 0.0, a, o));
+            }
+            Dialog::Jump => {
+                self.camera.center = (a, b);
+                self.camera.initialized = true;
+                self.log_msg(format!("Jumped to ({a:.3}, {b:.3})"));
+            }
+        }
+    }
+
+    /// Record a user-visible message in both the status bar and the Error Log.
+    fn log_msg(&mut self, m: String) {
+        self.status = m.clone();
+        self.log.push(m);
+        if self.log.len() > 500 {
+            self.log.remove(0);
+        }
+    }
+
+    /// Open a URL in the system browser (Help menu links).
+    fn open_url(&mut self, url: &str) {
+        #[cfg(target_os = "windows")]
+        let r = std::process::Command::new("cmd").args(["/C", "start", "", url]).spawn();
+        #[cfg(target_os = "macos")]
+        let r = std::process::Command::new("open").arg(url).spawn();
+        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+        let r = std::process::Command::new("xdg-open").arg(url).spawn();
+        match r {
+            Ok(_) => self.log_msg(format!("Opened {url}")),
+            Err(e) => self.status = format!("Could not open browser: {e}"),
+        }
+    }
+
+    /// Dispatch the menu-bar keyboard accelerators. Skipped while a text field
+    /// is focused, a modal is open, or an object editor is active (those have
+    /// their own key handling).
+    fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        if ctx.wants_keyboard_input() || self.dialog.is_some() || self.editor_active() {
+            return;
+        }
+        use egui::Key;
+        let pressed: Vec<(Key, egui::Modifiers)> = ctx.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::Key { key, pressed: true, modifiers, .. } => Some((*key, *modifiers)),
+                    _ => None,
+                })
+                .collect()
+        });
+        for (key, m) in pressed {
+            let plain = m.is_none();
+            let cmd = m.command && !m.shift && !m.alt;
+            let cmd_shift = m.command && m.shift && !m.alt;
+            let shift = m.shift && !m.command && !m.alt;
+            let alt = m.alt && !m.command && !m.shift;
+            match key {
+                // --- View ---
+                Key::Num1 if alt => self.set_all_visible(true),
+                Key::Num2 if alt => self.set_all_visible(false),
+                Key::Num3 if alt => self.set_other_visible(true),
+                Key::Num4 if alt => self.set_other_visible(false),
+                Key::V if plain => self.camera.initialized = false,
+                Key::Equals | Key::Plus if plain => self.zoom_by(1.25),
+                Key::Minus if plain => self.zoom_by(0.8),
+                Key::F5 if plain => self.camera.initialized = false,
+                Key::E if shift => self.center_gcode = !self.center_gcode,
+                Key::F10 if alt => self.toggle_fullscreen(ctx),
+                Key::F10 if m.command && !m.shift && !m.alt => self.plot_maximized = !self.plot_maximized,
+                Key::Backtick if plain => self.notebook_visible = !self.notebook_visible,
+                Key::G if plain => self.grid_snap = !self.grid_snap,
+                Key::G if shift => self.show_grid = !self.show_grid,
+                Key::A if shift => self.show_axis = !self.show_axis,
+                Key::W if shift => self.show_workspace = !self.show_workspace,
+                Key::H if shift => self.show_hud = !self.show_hud,
+                // --- Edit ---
+                Key::E if plain => self.edit_selected_object(),
+                Key::C if cmd => self.copy_selected(),
+                Key::O if plain => self.transform_selected("origin"),
+                Key::O if shift => self.transform_selected("origin"),
+                Key::J if plain => self.open_dialog(Dialog::Jump),
+                Key::A if cmd => self.set_all_visible(true),
+                Key::P if shift => self.show_settings = true,
+                // --- File ---
+                Key::N if cmd => self.new_project(),
+                Key::O if cmd => self.open_project(),
+                Key::S if cmd => self.save_project(),
+                Key::S if cmd_shift => self.save_project(),
+                Key::G if cmd => self.open_file_dialog("Gerber", &["gbr", "ger", "gtl", "gbl", "gto", "gbo", "gts", "gbs"]),
+                Key::E if cmd => self.open_file_dialog("Excellon", &["drl", "xln", "exc", "txt"]),
+                Key::P if cmd => self.status = "Print to PDF is not yet ported".into(),
+                // --- Options ---
+                Key::R if shift => self.open_dialog(Dialog::Rotate),
+                Key::X if shift => self.open_dialog(Dialog::SkewX),
+                Key::Y if shift => self.open_dialog(Dialog::SkewY),
+                Key::X if plain => {
+                    let (_, cy) = self.selected_centroid();
+                    self.map_selected_region("Flip X", |mp| fc_geo::transform::mirror_x(mp, cy));
+                }
+                Key::Y if plain => {
+                    let (cx, _) = self.selected_centroid();
+                    self.map_selected_region("Flip Y", |mp| fc_geo::transform::mirror_y(mp, cx));
+                }
+                Key::S if alt => self.show_source = true,
+                Key::D if cmd => self.status = "Tools Database is not yet ported".into(),
+                // --- Help ---
+                Key::F1 if plain => self.open_url("http://flatcam.org/manual/index.html"),
+                Key::F3 if plain => self.show_shortcuts = true,
+                Key::F4 if plain => self.open_url("https://www.youtube.com/user/Denvi1"),
+                _ => {}
+            }
+        }
+    }
+
     /// Bounding box `(minx, miny, maxx, maxy)` of a stored object's rings.
     fn object_bbox(s: &StoredObj) -> Option<(f64, f64, f64, f64)> {
         let mut b: Option<(f64, f64, f64, f64)> = None;
@@ -1521,27 +1975,32 @@ impl FlatCamApp {
         };
         // Only draw the fine (minor) grid when its lines are comfortably spaced
         // (>= 9 px); otherwise it turns into busy noise over the board.
-        if (minor * scale) >= 9.0 {
-            grid(minor, pal.grid_minor, 1.0);
+        // Grid lines obey View ▸ Toggle Grid Lines.
+        if self.show_grid {
+            if (minor * scale) >= 9.0 {
+                grid(minor, pal.grid_minor, 1.0);
+            }
+            grid(major, pal.grid_major, 1.0);
         }
-        grid(major, pal.grid_major, 1.0);
 
-        // Red origin axes (drawn only when 0 is within view).
-        let o = self.camera.to_screen((0.0, 0.0), rect);
-        let axis = egui::Stroke::new(1.2, pal.axis);
-        let x_on = o.x >= rect.left() && o.x <= rect.right();
-        let y_on = o.y >= rect.top() && o.y <= rect.bottom();
-        if x_on {
-            painter.line_segment([egui::pos2(o.x, rect.top()), egui::pos2(o.x, rect.bottom())], axis);
-        }
-        if y_on {
-            painter.line_segment([egui::pos2(rect.left(), o.y), egui::pos2(rect.right(), o.y)], axis);
-        }
-        // Bolder origin crosshair where the axes meet.
-        if x_on && y_on {
-            let cs = egui::Stroke::new(1.6, pal.axis);
-            painter.line_segment([egui::pos2(o.x - 7.0, o.y), egui::pos2(o.x + 7.0, o.y)], cs);
-            painter.line_segment([egui::pos2(o.x, o.y - 7.0), egui::pos2(o.x, o.y + 7.0)], cs);
+        // Red origin axes (drawn only when 0 is within view; View ▸ Toggle Axis).
+        if self.show_axis {
+            let o = self.camera.to_screen((0.0, 0.0), rect);
+            let axis = egui::Stroke::new(1.2, pal.axis);
+            let x_on = o.x >= rect.left() && o.x <= rect.right();
+            let y_on = o.y >= rect.top() && o.y <= rect.bottom();
+            if x_on {
+                painter.line_segment([egui::pos2(o.x, rect.top()), egui::pos2(o.x, rect.bottom())], axis);
+            }
+            if y_on {
+                painter.line_segment([egui::pos2(rect.left(), o.y), egui::pos2(rect.right(), o.y)], axis);
+            }
+            // Bolder origin crosshair where the axes meet.
+            if x_on && y_on {
+                let cs = egui::Stroke::new(1.6, pal.axis);
+                painter.line_segment([egui::pos2(o.x - 7.0, o.y), egui::pos2(o.x + 7.0, o.y)], cs);
+                painter.line_segment([egui::pos2(o.x, o.y - 7.0), egui::pos2(o.x, o.y + 7.0)], cs);
+            }
         }
 
         // Ruler gutters: opaque strips along the left (Y) and bottom (X) edges,
@@ -1595,131 +2054,474 @@ impl FlatCamApp {
         }
         // Insert any files that finished parsing on background threads.
         self.poll_loads(ctx);
+        // Global menu accelerators (skipped while a text field has focus).
+        self.handle_shortcuts(ctx);
 
         // --- menu bar ---
         egui::TopBottomPanel::top("menubar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
-                    if ui.button("Open…").clicked() {
-                        self.open_file_dialog("", &[]);
+                    if menu_item(ui, "New Project…", "Ctrl+N").clicked() {
+                        self.new_project();
                         ui.close_menu();
                     }
-                    if ui.button("Open Project").clicked() {
-                        self.open_project();
-                        ui.close_menu();
-                    }
-                    ui.menu_button("Import", |ui| {
-                        if ui.button("Gerber…").clicked() {
+                    ui.menu_button("New", |ui| {
+                        if menu_item(ui, "Geometry", "N").clicked() {
+                            self.new_empty_object(ObjectKind::Geometry);
+                            ui.close_menu();
+                        }
+                        if menu_item(ui, "Gerber", "B").clicked() {
+                            self.new_empty_object(ObjectKind::Gerber);
+                            ui.close_menu();
+                        }
+                        if menu_item(ui, "Excellon", "L").clicked() {
+                            self.new_empty_object(ObjectKind::Excellon);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if menu_item(ui, "Document", "D").clicked() {
+                            self.new_empty_object(ObjectKind::Document);
+                            ui.close_menu();
+                        }
+                    });
+                    ui.menu_button("Open", |ui| {
+                        if menu_item(ui, "Open Project…", "Ctrl+O").clicked() {
+                            self.open_project();
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if menu_item(ui, "Open Gerber…", "Ctrl+G").clicked() {
                             self.open_file_dialog("Gerber", &["gbr", "ger", "gtl", "gbl", "gto", "gbo", "gts", "gbs"]);
                             ui.close_menu();
                         }
-                        if ui.button("Excellon…").clicked() {
+                        if menu_item(ui, "Open Excellon…", "Ctrl+E").clicked() {
                             self.open_file_dialog("Excellon", &["drl", "xln", "exc", "txt"]);
                             ui.close_menu();
                         }
-                        if ui.button("SVG…").clicked() {
-                            self.open_file_dialog("SVG", &["svg"]);
+                        if menu_item(ui, "Open G-Code…", "").clicked() {
+                            self.open_file_dialog("G-Code", &["gcode", "nc", "ngc", "tap", "cnc"]);
                             ui.close_menu();
                         }
-                        if ui.button("DXF…").clicked() {
-                            self.open_file_dialog("DXF", &["dxf"]);
+                        ui.separator();
+                        if menu_item(ui, "Open Config…", "").clicked() {
+                            self.open_file_dialog("Config", &["cfg", "txt", "json"]);
                             ui.close_menu();
                         }
-                        if ui.button("PDF…").clicked() {
-                            self.open_file_dialog("PDF", &["pdf"]);
+                    });
+                    ui.menu_button("Recent projects", |ui| {
+                        ui.add_enabled(false, egui::Button::new("(no recent projects)"));
+                    });
+                    ui.menu_button("Recent files", |ui| {
+                        ui.add_enabled(false, egui::Button::new("(no recent files)"));
+                    });
+                    ui.menu_button("Save", |ui| {
+                        if menu_item(ui, "Save Project…", "Ctrl+S").clicked() {
+                            self.save_project();
+                            ui.close_menu();
+                        }
+                        if menu_item(ui, "Save Project As…", "Ctrl+Shift+S").clicked() {
+                            self.save_project();
                             ui.close_menu();
                         }
                     });
                     ui.separator();
-                    if ui.button("Save Project").clicked() {
-                        self.save_project();
+                    ui.menu_button("Scripting", |ui| {
+                        if menu_item(ui, "New Script…", "").clicked() {
+                            self.status = "Scripting is not yet ported".into();
+                            ui.close_menu();
+                        }
+                        if menu_item(ui, "Open Script…", "").clicked() {
+                            self.status = "Scripting is not yet ported".into();
+                            ui.close_menu();
+                        }
+                        if menu_item(ui, "Open Example…", "").clicked() {
+                            self.status = "Scripting is not yet ported".into();
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if menu_item(ui, "Run Script…", "Shift+S").clicked() {
+                            self.status = "Scripting is not yet ported".into();
+                            ui.close_menu();
+                        }
+                    });
+                    ui.separator();
+                    ui.menu_button("Import", |ui| {
+                        if menu_item(ui, "SVG as Geometry Object…", "").clicked() {
+                            self.open_file_dialog("SVG", &["svg"]);
+                            ui.close_menu();
+                        }
+                        if menu_item(ui, "SVG as Gerber Object…", "").clicked() {
+                            self.open_file_dialog("SVG", &["svg"]);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if menu_item(ui, "DXF as Geometry Object…", "").clicked() {
+                            self.open_file_dialog("DXF", &["dxf"]);
+                            ui.close_menu();
+                        }
+                        if menu_item(ui, "DXF as Gerber Object…", "").clicked() {
+                            self.open_file_dialog("DXF", &["dxf"]);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if menu_item(ui, "HPGL2 as Geometry Object…", "").clicked() {
+                            self.open_file_dialog("HPGL2", &["plt", "hpgl", "hpg"]);
+                            ui.close_menu();
+                        }
+                    });
+                    ui.menu_button("Export", |ui| {
+                        if menu_item(ui, "Export SVG…", "").clicked() {
+                            self.status = "Export SVG is not yet ported".into();
+                            ui.close_menu();
+                        }
+                        if menu_item(ui, "Export DXF…", "").clicked() {
+                            self.status = "Export DXF is not yet ported".into();
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if menu_item(ui, "Export PNG…", "").clicked() {
+                            self.status = "Export PNG is not yet ported".into();
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if menu_item(ui, "Export Excellon…", "").clicked() {
+                            self.status = "Export Excellon is not yet ported".into();
+                            ui.close_menu();
+                        }
+                        if menu_item(ui, "Export Gerber…", "").clicked() {
+                            self.status = "Export Gerber is not yet ported".into();
+                            ui.close_menu();
+                        }
+                    });
+                    ui.separator();
+                    ui.menu_button("Backup", |ui| {
+                        if menu_item(ui, "Import Preferences from file…", "").clicked() {
+                            self.status = "Preferences import is not yet ported".into();
+                            ui.close_menu();
+                        }
+                        if menu_item(ui, "Export Preferences to file…", "").clicked() {
+                            self.status = "Preferences export is not yet ported".into();
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if menu_item(ui, "Save Preferences", "").clicked() {
+                            self.status = "Preferences saved".into();
+                            ui.close_menu();
+                        }
+                    });
+                    ui.separator();
+                    if menu_item(ui, "Print (PDF)", "Ctrl+P").clicked() {
+                        self.status = "Print to PDF is not yet ported".into();
                         ui.close_menu();
                     }
-                    if ui.button("Export G-code…").clicked() {
+                    ui.separator();
+                    // Kept from the port: direct G-code export of the active CNCJob.
+                    if menu_item(ui, "Export G-code…", "").clicked() {
                         self.save_gcode();
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button("Quit").clicked() {
+                    if menu_item(ui, "Exit", "").clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
                 ui.menu_button("Edit", |ui| {
-                    if ui.button("Copy (duplicate)").clicked() {
-                        self.copy_selected();
+                    if menu_item(ui, "Edit Object", "E").clicked() {
+                        self.edit_selected_object();
                         ui.close_menu();
                     }
-                    if ui.button("Delete").clicked() {
-                        self.delete_selected();
-                        ui.close_menu();
-                    }
-                    if ui.button("Set Origin").clicked() {
-                        self.transform_selected("origin");
+                    if menu_item(ui, "Exit Editor", "Ctrl+S").clicked() {
+                        self.exit_editor();
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button("Preferences…").clicked() {
+                    ui.menu_button("Conversion", |ui| {
+                        if menu_item(ui, "Convert Single to MultiGeo", "").clicked() {
+                            self.status = "Single→Multi geo conversion is not yet ported".into();
+                            ui.close_menu();
+                        }
+                        if menu_item(ui, "Convert Multi to SingleGeo", "").clicked() {
+                            self.status = "Multi→Single geo conversion is not yet ported".into();
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if menu_item(ui, "Convert Any to Geo", "").clicked() {
+                            self.convert_selected(ObjectKind::Geometry);
+                            ui.close_menu();
+                        }
+                        if menu_item(ui, "Convert Any to Gerber", "").clicked() {
+                            self.convert_selected(ObjectKind::Gerber);
+                            ui.close_menu();
+                        }
+                        if menu_item(ui, "Convert Any to Excellon", "").clicked() {
+                            self.convert_selected(ObjectKind::Excellon);
+                            ui.close_menu();
+                        }
+                    });
+                    ui.menu_button("Join Objects", |ui| {
+                        if menu_item(ui, "Join Geo/Gerber/Exc -> Geo", "").clicked() {
+                            self.status = "Join needs multi-select (not yet ported)".into();
+                            ui.close_menu();
+                        }
+                        if menu_item(ui, "Join Excellon(s) -> Excellon", "").clicked() {
+                            self.status = "Join needs multi-select (not yet ported)".into();
+                            ui.close_menu();
+                        }
+                        if menu_item(ui, "Join Gerber(s) -> Gerber", "").clicked() {
+                            self.status = "Join needs multi-select (not yet ported)".into();
+                            ui.close_menu();
+                        }
+                    });
+                    ui.separator();
+                    if menu_item(ui, "Copy", "Ctrl+C").clicked() {
+                        self.copy_selected();
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if menu_item(ui, "Delete", "Del").clicked() {
+                        self.delete_selected();
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if menu_item(ui, "Num Move", "").clicked() {
+                        self.open_dialog(Dialog::NumMove);
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, "Set Origin", "O").clicked() {
+                        self.transform_selected("origin");
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, "Move to Origin", "Shift+O").clicked() {
+                        self.transform_selected("origin");
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, "Custom Origin", "").clicked() {
+                        self.open_dialog(Dialog::CustomOrigin);
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, "Jump to Location", "J").clicked() {
+                        self.open_dialog(Dialog::Jump);
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, "Locate in Object", "Shift+J").clicked() {
+                        self.status = "Locate in Object is not yet ported".into();
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if menu_item(ui, "Select All", "Ctrl+A").clicked() {
+                        self.set_all_visible(true);
+                        self.status = "Enabled all objects (port uses single-object selection)".into();
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if menu_item(ui, "Preferences", "Shift+P").clicked() {
                         self.show_settings = true;
                         ui.close_menu();
                     }
                 });
                 ui.menu_button("View", |ui| {
-                    if ui.button("Zoom Fit").clicked() {
+                    if menu_item(ui, "Enable all", "Alt+1").clicked() {
+                        self.set_all_visible(true);
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, "Disable all", "Alt+2").clicked() {
+                        self.set_all_visible(false);
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, "Enable non-selected", "Alt+3").clicked() {
+                        self.set_other_visible(true);
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, "Disable non-selected", "Alt+4").clicked() {
+                        self.set_other_visible(false);
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if menu_item(ui, "Zoom Fit", "V").clicked() {
+                        self.camera.initialized = false;
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, "Zoom In", "=").clicked() {
+                        self.zoom_by(1.25);
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, "Zoom Out", "-").clicked() {
+                        self.zoom_by(0.8);
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if menu_item(ui, "Redraw All", "F5").clicked() {
                         self.camera.initialized = false;
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button("Enable all").clicked() {
-                        self.set_all_visible(true);
-                        ui.close_menu();
-                    }
-                    if ui.button("Disable all").clicked() {
-                        self.set_all_visible(false);
+                    if menu_item(ui, "Toggle Code Editor", "Shift+E").clicked() {
+                        self.center_gcode = !self.center_gcode;
                         ui.close_menu();
                     }
                     ui.separator();
+                    if menu_item(ui, "Toggle FullScreen", "Alt+F10").clicked() {
+                        self.toggle_fullscreen(ctx);
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, "Toggle Plot Area", "Ctrl+F10").clicked() {
+                        self.plot_maximized = !self.plot_maximized;
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, "Toggle Project/Properties/Tool", "`").clicked() {
+                        self.notebook_visible = !self.notebook_visible;
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if menu_item(ui, "Toggle Grid Snap", "G").clicked() {
+                        self.grid_snap = !self.grid_snap;
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, "Toggle Grid Lines", "Shift+G").clicked() {
+                        self.show_grid = !self.show_grid;
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, "Toggle Axis", "Shift+A").clicked() {
+                        self.show_axis = !self.show_axis;
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, "Toggle Workspace", "Shift+W").clicked() {
+                        self.show_workspace = !self.show_workspace;
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, "Toggle HUD", "Shift+H").clicked() {
+                        self.show_hud = !self.show_hud;
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if menu_item(ui, "Error Log", "").clicked() {
+                        self.show_log = true;
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    // Port extras: fill toggle and colour theme.
                     ui.checkbox(&mut self.fill_on, "Fill regions");
-                    ui.checkbox(&mut self.show_grid, "Show grid");
-                    ui.separator();
-                    ui.label("Theme");
-                    ui.radio_value(&mut self.theme, Theme::Light, "Light");
-                    ui.radio_value(&mut self.theme, Theme::Dark, "Dark");
+                    ui.menu_button("Theme", |ui| {
+                        ui.radio_value(&mut self.theme, Theme::Light, "Light");
+                        ui.radio_value(&mut self.theme, Theme::Dark, "Dark");
+                    });
                 });
                 ui.menu_button("Options", |ui| {
-                    if ui.button("Flip / Mirror").clicked() {
-                        self.transform_selected("mirror");
-                        ui.close_menu();
-                    }
-                    if ui.button("Move to Origin").clicked() {
-                        self.transform_selected("origin");
+                    if menu_item(ui, "Rotate Selection", "Shift+R").clicked() {
+                        self.open_dialog(Dialog::Rotate);
                         ui.close_menu();
                     }
                     ui.separator();
+                    if menu_item(ui, "Skew on X axis", "Shift+X").clicked() {
+                        self.open_dialog(Dialog::SkewX);
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, "Skew on Y axis", "Shift+Y").clicked() {
+                        self.open_dialog(Dialog::SkewY);
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if menu_item(ui, "Flip on X axis", "X").clicked() {
+                        let (_, cy) = self.selected_centroid();
+                        self.map_selected_region("Flip X", |mp| fc_geo::transform::mirror_x(mp, cy));
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, "Flip on Y axis", "Y").clicked() {
+                        let (cx, _) = self.selected_centroid();
+                        self.map_selected_region("Flip Y", |mp| fc_geo::transform::mirror_y(mp, cx));
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if menu_item(ui, "View source", "Alt+S").clicked() {
+                        self.show_source = true;
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, "Tools Database", "Ctrl+D").clicked() {
+                        self.status = "Tools Database is not yet ported".into();
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    ui.menu_button("Experimental", |ui| {
+                        if menu_item(ui, "3D Area", "").clicked() {
+                            self.status = "3D Area is experimental and not ported".into();
+                            ui.close_menu();
+                        }
+                    });
+                    ui.separator();
+                    // Port extra: units selector.
                     ui.horizontal(|ui| {
                         ui.label("Units");
                         ui.radio_value(&mut self.units_label, "mm".to_string(), "mm");
                         ui.radio_value(&mut self.units_label, "inch".to_string(), "inch");
                     });
-                    ui.separator();
-                    if ui.button("Preferences…").clicked() {
-                        self.show_settings = true;
-                        ui.close_menu();
-                    }
                 });
                 ui.menu_button("Objects", |ui| {
-                    if ui.button("Deselect All").clicked() {
+                    if menu_item(ui, "Select All", "").clicked() {
+                        self.set_all_visible(true);
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, "Deselect All", "").clicked() {
                         self.project.selected = None;
                         ui.close_menu();
                     }
-                    if ui.button("Duplicate selected").clicked() {
+                    ui.separator();
+                    // Port extras: single-object duplicate/delete.
+                    if menu_item(ui, "Duplicate selected", "").clicked() {
                         self.copy_selected();
                         ui.close_menu();
                     }
-                    if ui.button("Delete selected").clicked() {
+                    if menu_item(ui, "Delete selected", "").clicked() {
                         self.delete_selected();
                         ui.close_menu();
                     }
                 });
+                // Contextual editor menu — only shown while an object editor is
+                // active, mirroring the stock Geo/Gerber/Excellon editor menus.
+                if self.editor_active() {
+                    let (title, items): (&str, &[(&str, EditTool, &str)]) = match self.editor_kind() {
+                        2 => (
+                            "Gerber Editor",
+                            &[("Select", EditTool::Select, ""), ("Pad", EditTool::Pad, "P"), ("Track", EditTool::Path, "T")],
+                        ),
+                        3 => ("Exc Editor", &[("Select", EditTool::Select, ""), ("Drill", EditTool::Drill, "D")]),
+                        _ => (
+                            "Geo Editor",
+                            &[
+                                ("Select", EditTool::Select, ""),
+                                ("Point", EditTool::Point, ""),
+                                ("Path", EditTool::Path, "P"),
+                                ("Rectangle", EditTool::Rect, "R"),
+                                ("Circle", EditTool::Circle, "O"),
+                            ],
+                        ),
+                    };
+                    ui.menu_button(title, |ui| {
+                        for (label, tool, sc) in items {
+                            if menu_item(ui, label, sc).clicked() {
+                                self.edit_tool = *tool;
+                                self.status = format!("{label} tool");
+                                ui.close_menu();
+                            }
+                        }
+                        ui.separator();
+                        // Stubs for editor features the port's fc-editor doesn't have yet.
+                        for label in ["Buffer", "Paint", "Transform", "Union", "Subtraction"] {
+                            if menu_item(ui, label, "").clicked() {
+                                self.status = format!("{label} editor tool is not yet ported");
+                                ui.close_menu();
+                            }
+                        }
+                        ui.separator();
+                        if menu_item(ui, "Bake to object", "").clicked() {
+                            self.bake_editor();
+                            ui.close_menu();
+                        }
+                        if menu_item(ui, "Exit Editor", "Ctrl+S").clicked() {
+                            self.exit_editor();
+                            ui.close_menu();
+                        }
+                    });
+                }
                 ui.menu_button("Plugins", |ui| {
                     // Grouped tool list, populated from the plugin registry.
                     let mut cats: Vec<&'static str> = Vec::new();
@@ -1746,16 +2548,49 @@ impl FlatCamApp {
                     }
                 });
                 ui.menu_button("Help", |ui| {
-                    if ui.button("Getting Started").clicked() {
-                        self.show_help = true;
+                    if menu_item(ui, "Online Help", "F1").clicked() {
+                        self.open_url("http://flatcam.org/manual/index.html");
                         ui.close_menu();
                     }
-                    if ui.button("Keyboard & Mouse").clicked() {
-                        self.show_shortcuts = true;
+                    ui.menu_button("Bookmarks", |ui| {
+                        if menu_item(ui, "Bookmarks Manager", "").clicked() {
+                            self.status = "Bookmarks Manager is not yet ported".into();
+                            ui.close_menu();
+                        }
+                    });
+                    ui.separator();
+                    if menu_item(ui, "Report a bug", "").clicked() {
+                        self.open_url("https://bitbucket.org/jpcgt/flatcam/issues");
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button("About").clicked() {
+                    if menu_item(ui, "Excellon Specification", "").clicked() {
+                        self.open_url("https://web.archive.org/web/20071030075236/http://www.excellon.com/manuals/program.htm");
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, "Gerber Specification", "").clicked() {
+                        self.open_url("https://www.ucamco.com/en/gerber");
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if menu_item(ui, "Shortcuts List", "F3").clicked() {
+                        self.show_shortcuts = true;
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, "YouTube Channel", "F4").clicked() {
+                        self.open_url("https://www.youtube.com/user/Denvi1");
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if menu_item(ui, "Donate", "").clicked() {
+                        self.open_url("http://flatcam.org/");
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, "How To", "").clicked() {
+                        self.show_help = true;
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, "About", "").clicked() {
                         self.show_about = true;
                         ui.close_menu();
                     }
@@ -1763,7 +2598,8 @@ impl FlatCamApp {
             });
         });
 
-        // --- icon toolbar ---
+        // --- icon toolbar (hidden when the plot area is maximised) ---
+        if !self.plot_maximized {
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 // File group.
@@ -1849,8 +2685,10 @@ impl FlatCamApp {
                 self.center_gcode = false;
             }
         });
+        } // end: !plot_maximized (toolbar + tab strip)
 
         // --- left notebook: Project / Properties / Plugin (stock-FlatCAM layout) ---
+        if self.notebook_visible && !self.plot_maximized {
         egui::SidePanel::left("notebook").resizable(true).default_width(260.0).show(ctx, |ui| {
             ui.add_space(4.0);
             let mut tab_idx = self.left_tab as usize;
@@ -1870,6 +2708,7 @@ impl FlatCamApp {
                 }
             });
         });
+        } // end: notebook_visible
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -1943,9 +2782,12 @@ impl FlatCamApp {
                     None => self.camera.default_view(rect),
                 }
             }
-            // Measurement grid + axes + rulers, behind everything.
-            if self.show_grid {
-                self.draw_grid(&painter, rect, &pal);
+            // Grid lines, origin axes and rulers (each toggled independently in
+            // the View menu; rulers always draw). Behind everything.
+            self.draw_grid(&painter, rect, &pal);
+            // Workspace sheet outline (View ▸ Toggle Workspace) — A4 landscape.
+            if self.show_workspace {
+                self.draw_workspace(&painter, rect, &pal);
             }
             // LEFT-drag pans the view.
             if response.dragged_by(egui::PointerButton::Primary) {
@@ -2130,7 +2972,8 @@ impl FlatCamApp {
                 painter.line_segment([egui::pos2(p.x, p.y - 8.0), egui::pos2(p.x, p.y + 8.0)], cs);
             }
             // Coordinate HUD box (top-left of the canvas), like stock FlatCAM.
-            if response.hover_pos().is_some() {
+            // Toggled by View ▸ Toggle HUD.
+            if self.show_hud && response.hover_pos().is_some() {
                 let (wx, wy) = self.cursor_world.unwrap_or((0.0, 0.0));
                 let hud = egui::Rect::from_min_size(
                     egui::pos2(rect.left() + 8.0, rect.top() + 8.0),
@@ -2155,27 +2998,11 @@ impl FlatCamApp {
                 .and_then(|w| self.object_at(w));
             response.context_menu(|ui| {
                 if let Some(name) = menu_target {
-                    ui.label(egui::RichText::new(&name).strong());
+                    self.object_context_menu(ui, &name);
                     ui.separator();
-                    if ui.button("Select").clicked() {
-                        self.project.select(&name);
-                        self.rename_buf = name.clone();
-                        ui.close_menu();
-                    }
-                    if ui.button("Properties").clicked() {
-                        self.project.select(&name);
-                        self.left_tab = LeftTab::Properties;
-                        ui.close_menu();
-                    }
                     if ui.button("Isolation").clicked() {
                         self.project.select(&name);
                         self.run_isolation();
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    if ui.button("Delete").clicked() {
-                        self.project.select(&name);
-                        self.delete_selected();
                         ui.close_menu();
                     }
                 } else {
@@ -2253,6 +3080,95 @@ impl FlatCamApp {
             }
         });
         self.show_gcode = gopen;
+
+        // Error / activity log window (View ▸ Error Log).
+        let mut log_open = self.show_log;
+        egui::Window::new("Error Log").open(&mut log_open).default_size([460.0, 300.0]).show(ctx, |ui| {
+            if ui.button("Clear").clicked() {
+                self.log.clear();
+            }
+            ui.separator();
+            egui::ScrollArea::vertical().auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
+                if self.log.is_empty() {
+                    ui.weak("(no messages yet)");
+                }
+                for line in &self.log {
+                    ui.monospace(line);
+                }
+            });
+        });
+        self.show_log = log_open;
+
+        // View-source window (Options ▸ View source) — shows the selected object's
+        // origin file path and a short geometry summary.
+        let mut src_open = self.show_source;
+        egui::Window::new("Source").open(&mut src_open).default_size([420.0, 320.0]).show(ctx, |ui| {
+            match self.project.selected.clone() {
+                Some(sel) => {
+                    ui.label(format!("Object: {sel}"));
+                    let path = self.project.objects.iter().find(|o| o.name == sel).and_then(|o| o.source_path.clone());
+                    ui.separator();
+                    egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| match path {
+                        Some(p) => match std::fs::read_to_string(&p) {
+                            Ok(text) => {
+                                ui.monospace(&p);
+                                ui.separator();
+                                ui.monospace(text);
+                            }
+                            Err(_) => {
+                                ui.monospace(format!("Source file: {p}"));
+                                ui.weak("(file not readable — it may be a generated object)");
+                            }
+                        },
+                        None => {
+                            ui.weak("This object has no source file (created in-app).");
+                        }
+                    });
+                }
+                None => {
+                    ui.weak("Select an object first.");
+                }
+            }
+        });
+        self.show_source = src_open;
+
+        // Numeric-parameter modal for Edit/Options actions (Num Move, Jump,
+        // Custom Origin, Rotate, Skew X/Y).
+        if let Some(d) = self.dialog {
+            let mut win_open = true;
+            let mut apply = false;
+            let mut cancel = false;
+            egui::Window::new(d.title()).collapsible(false).resizable(false).open(&mut win_open).show(ctx, |ui| {
+                let fields = d.fields();
+                ui.add(egui::DragValue::new(&mut self.dlg_a).speed(0.1).prefix(format!("{}: ", fields[0])));
+                if fields.len() > 1 {
+                    ui.add(egui::DragValue::new(&mut self.dlg_b).speed(0.1).prefix(format!("{}: ", fields[1])));
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Apply").clicked() {
+                        apply = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+            if apply {
+                self.apply_dialog();
+            } else if cancel || !win_open {
+                self.dialog = None;
+            }
+        }
+    }
+
+    /// Draw an A4-landscape (297×210 mm) workspace sheet outline at the origin.
+    fn draw_workspace(&self, painter: &egui::Painter, rect: egui::Rect, pal: &Palette) {
+        let (w, h) = if self.units_label == "inch" { (11.0, 8.5) } else { (297.0, 210.0) };
+        let p0 = self.camera.to_screen((0.0, 0.0), rect);
+        let p1 = self.camera.to_screen((w, h), rect);
+        let sheet = egui::Rect::from_two_pos(p0, p1);
+        painter.rect_stroke(sheet, 0.0, egui::Stroke::new(1.5, pal.axis));
     }
 }
 
@@ -2297,9 +3213,13 @@ impl FlatCamApp {
                             let col = colors.get(&row.name).copied().unwrap_or(egui::Color32::GRAY);
                             let (sw, _) = ui.allocate_exact_size(egui::vec2(11.0, 11.0), egui::Sense::hover());
                             ui.painter().rect_filled(sw, egui::Rounding::same(2.0), col);
-                            if ui.selectable_label(row.selected, &row.name).clicked() {
+                            let resp = ui.selectable_label(row.selected, &row.name);
+                            if resp.clicked() {
                                 to_select = Some(row.name.clone());
                             }
+                            // Right-click → full object context menu (Enable/Disable,
+                            // Set Color, View Source, Edit, Copy, Delete, Save, Properties).
+                            resp.context_menu(|ui| self.object_context_menu(ui, &row.name));
                         });
                     }
                 });
