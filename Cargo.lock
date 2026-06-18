@@ -1260,6 +1260,7 @@ dependencies = [
  "fc-geo",
  "fc-gerber",
  "fc-hpgl",
+ "fc-script",
  "fc-svg",
  "geo 0.29.3",
 ]
@@ -1339,6 +1340,21 @@ name = "fc-hpgl"
 version = "0.1.0"
 dependencies = [
  "fc-geo",
+ "geo 0.29.3",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "fc-script"
+version = "0.1.0"
+dependencies = [
+ "fc-cam",
+ "fc-dxf",
+ "fc-excellon",
+ "fc-gcode",
+ "fc-geo",
+ "fc-gerber",
+ "fc-svg",
  "geo 0.29.3",
  "thiserror 2.0.18",
 ]

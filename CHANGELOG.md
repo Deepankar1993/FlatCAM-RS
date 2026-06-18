@@ -2,6 +2,23 @@
 
 All notable changes to the Rust port are recorded here.
 
+## [0.14.0] — scripting engine + GUI project save/load
+
+### Added
+- **`fc-script`** (new crate) — headless batch/scripting engine (parity path for
+  `tclCommands/`): a `Registry` + `ScriptContext` with 22 commands authored by 5
+  agents in parallel — io (open_gerber/excellon/svg/dxf, export_gcode), cam
+  (isolate/paint/ncc/cutout/drill), geo_ops (offset/scale/translate/mirror_x/
+  subtract/union), query (list/bounds/area/count/delete/rename), gen
+  (new_rect/new_circle/drill_array). 41 tests.
+- **CLI `script <file>`** — run a batch script (verified end-to-end:
+  rect→subtract hole→isolate→export G-code).
+- **GUI project save/load** — Open/Save Project (JSON via `fc-app`); objects
+  track their source path and geometry is regenerated on load.
+
+### Verified
+- `cargo test --workspace`: 360 passed, 0 warnings. 13 crates.
+
 ## [0.13.0] — Phase 7: project tree
 
 ### Added

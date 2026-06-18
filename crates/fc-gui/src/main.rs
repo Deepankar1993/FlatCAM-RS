@@ -161,10 +161,12 @@ impl FlatCamApp {
         units: Units,
         geom: StoredGeom,
         parent: Option<String>,
+        source: Option<String>,
     ) -> String {
         let name = self.project.unique_name(base);
         let mut obj = ProjectObject::new(name.clone(), kind);
         obj.parent = parent;
+        obj.source_path = source;
         let _ = self.project.add(obj);
         self.store.insert(name.clone(), StoredObj { kind, units, geom });
         self.project.selected = Some(name.clone());
@@ -172,55 +174,81 @@ impl FlatCamApp {
         name
     }
 
+    /// Parse a file into a runtime object (kind/units/geometry), or None.
+    fn parse_file(path: &str) -> Option<StoredObj> {
+        let text = std::fs::read_to_string(path).ok()?;
+        let lower = path.to_lowercase();
+        if lower.ends_with(".svg") {
+            let svg = fc_svg::parse(&text).ok()?;
+            Some(StoredObj { kind: ObjectKind::Svg, units: Units::Mm, geom: StoredGeom::Region(svg.polygons) })
+        } else if lower.ends_with(".dxf") {
+            let d = fc_dxf::parse(&text).ok()?;
+            Some(StoredObj { kind: ObjectKind::Geometry, units: Units::Mm, geom: StoredGeom::Region(d.polygons) })
+        } else if lower.ends_with(".drl") || lower.ends_with(".nc") || lower.ends_with(".xln") || lower.ends_with(".exc") {
+            let e = fc_excellon::parse(&text).ok()?;
+            let u = map_exc_units(e.units);
+            Some(StoredObj { kind: ObjectKind::Excellon, units: u, geom: StoredGeom::Excellon(e) })
+        } else {
+            let g = fc_gerber::parse(&text).ok()?;
+            let u = map_gerber_units(g.units);
+            Some(StoredObj { kind: ObjectKind::Gerber, units: u, geom: StoredGeom::Region(g.solid_geometry) })
+        }
+    }
+
     fn load_path(&mut self, path: &str) {
-        let text = match std::fs::read_to_string(path) {
-            Ok(t) => t,
-            Err(e) => {
-                self.status = format!("Failed to read {path}: {e}");
-                return;
-            }
-        };
         let base = std::path::Path::new(path)
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("object")
             .to_string();
-        let lower = path.to_lowercase();
-        if lower.ends_with(".svg") {
-            match fc_svg::parse(&text) {
-                Ok(svg) => {
-                    self.add_object(&base, ObjectKind::Svg, Units::Mm, StoredGeom::Region(svg.polygons), None);
-                    self.status = format!("Loaded {base} (SVG)");
-                }
-                Err(e) => self.status = format!("SVG parse error: {e}"),
+        match Self::parse_file(path) {
+            Some(obj) => {
+                let kind = obj.kind;
+                let units = obj.units;
+                let name = self.add_object(&base, kind, units, obj.geom, None, Some(path.to_string()));
+                self.status = format!("Loaded {name} ({:?})", kind);
             }
-        } else if lower.ends_with(".dxf") {
-            match fc_dxf::parse(&text) {
-                Ok(d) => {
-                    self.add_object(&base, ObjectKind::Geometry, Units::Mm, StoredGeom::Region(d.polygons), None);
-                    self.status = format!("Loaded {base} (DXF)");
-                }
-                Err(e) => self.status = format!("DXF parse error: {e}"),
+            None => self.status = format!("Failed to load {path} (parse error or unreadable)"),
+        }
+    }
+
+    fn save_project(&mut self) {
+        if let Some(path) = rfd::FileDialog::new().add_filter("FlatCAM-RS project", &["json"]).set_file_name("project.json").save_file() {
+            match self.project.save(&path) {
+                Ok(()) => self.status = format!("Saved project {}", path.to_string_lossy()),
+                Err(e) => self.status = format!("Save project failed: {e}"),
             }
-        } else if lower.ends_with(".drl") || lower.ends_with(".nc") || lower.ends_with(".xln") || lower.ends_with(".exc") {
-            match fc_excellon::parse(&text) {
-                Ok(e) => {
-                    let u = map_exc_units(e.units);
-                    let n = e.drill_count();
-                    self.add_object(&base, ObjectKind::Excellon, u, StoredGeom::Excellon(e), None);
-                    self.status = format!("Loaded {base} ({n} drills)");
+        }
+    }
+
+    fn open_project(&mut self) {
+        let Some(path) = rfd::FileDialog::new().add_filter("FlatCAM-RS project", &["json"]).pick_file() else {
+            return;
+        };
+        match Project::load(&path) {
+            Ok(proj) => {
+                self.store.clear();
+                let mut missing = 0;
+                // Re-generate geometry for file-backed objects.
+                for obj in &proj.objects {
+                    if let Some(src) = &obj.source_path {
+                        if let Some(stored) = Self::parse_file(src) {
+                            self.store.insert(obj.name.clone(), stored);
+                            continue;
+                        }
+                    }
+                    missing += 1;
                 }
-                Err(e) => self.status = format!("Excellon parse error: {e}"),
+                self.project = proj;
+                self.camera.initialized = false;
+                self.status = format!(
+                    "Opened project {} ({} objects, {} without geometry)",
+                    path.to_string_lossy(),
+                    self.project.objects.len(),
+                    missing
+                );
             }
-        } else {
-            match fc_gerber::parse(&text) {
-                Ok(g) => {
-                    let u = map_gerber_units(g.units);
-                    self.add_object(&base, ObjectKind::Gerber, u, StoredGeom::Region(g.solid_geometry), None);
-                    self.status = format!("Loaded {base} (Gerber)");
-                }
-                Err(e) => self.status = format!("Gerber parse error: {e}"),
-            }
+            Err(e) => self.status = format!("Open project failed: {e}"),
         }
     }
 
@@ -250,6 +278,7 @@ impl FlatCamApp {
             units,
             StoredGeom::Cnc(paths),
             Some(source.to_string()),
+            None,
         );
         self.project.selected = keep; // keep source selected for chaining
         self.status = format!("{name}: {n} path(s) — G-code ready ({})", pp.name());
@@ -337,7 +366,7 @@ impl FlatCamApp {
         self.last_gcode = Some(gcode);
         let n = all.len();
         let keep = self.project.selected.clone();
-        self.add_object(&format!("{name}_drill"), ObjectKind::CncJob, units, StoredGeom::Cnc(all), Some(name.clone()));
+        self.add_object(&format!("{name}_drill"), ObjectKind::CncJob, units, StoredGeom::Cnc(all), Some(name.clone()), None);
         self.project.selected = keep;
         self.status = format!("Drilling: {n} holes — G-code ready ({})", pp.name());
     }
@@ -491,7 +520,7 @@ impl FlatCamApp {
             self.status = "No editor active".into();
             return;
         };
-        self.add_object("Edit", ObjectKind::Geometry, Units::Mm, StoredGeom::Region(mp), None);
+        self.add_object("Edit", ObjectKind::Geometry, Units::Mm, StoredGeom::Region(mp), None, None);
         self.editor = Editor::None;
         self.pending_path.clear();
         self.status = "Baked editor into a Geometry object".into();
@@ -563,6 +592,12 @@ impl eframe::App for FlatCamApp {
                     if let Some(path) = rfd::FileDialog::new().pick_file() {
                         self.load_path(&path.to_string_lossy());
                     }
+                }
+                if ui.button("Open Project").clicked() {
+                    self.open_project();
+                }
+                if ui.button("Save Project").clicked() {
+                    self.save_project();
                 }
                 ui.separator();
                 if ui.button("Isolation").clicked() {

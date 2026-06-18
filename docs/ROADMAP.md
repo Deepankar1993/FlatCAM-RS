@@ -88,8 +88,10 @@ common remainder behind the existing `Preprocessor` trait.
 - ✅ `fc-app`: object collection + project open/save (JSON), per-object options
   (`LoudDict` analogue), units, object kinds. GUI-free, testable. Geometry is
   regenerated from source (not serialized), matching FlatCAM.
-- ⬜ Tcl-style or new scripting/batch interface (parity with `tclCommands/`).
-- ⬜ Project file format (load/save `.FlatPrj` or a new format).
+- ✅ Scripting/batch interface (`fc-script`, 22 commands across io/cam/geo/query/
+  gen) + CLI `script <file>`. Parity path for `tclCommands/`.
+- ✅ Project file format — JSON via `fc-app`; GUI Open/Save Project (regenerates
+  geometry from source paths).
 
 ## Phase 7 — GUI 🔶 (largest surface, ~28 K LOC PyQt6)
 

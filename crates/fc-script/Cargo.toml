@@ -1,11 +1,7 @@
 [package]
-name = "fc-cli"
+name = "fc-script"
 version.workspace = true
 edition.workspace = true
-
-[[bin]]
-name = "flatcam-rs"
-path = "src/main.rs"
 
 [dependencies]
 fc-geo = { path = "../fc-geo" }
@@ -14,8 +10,6 @@ fc-excellon = { path = "../fc-excellon" }
 fc-gcode = { path = "../fc-gcode" }
 fc-cam = { path = "../fc-cam" }
 fc-svg = { path = "../fc-svg" }
-fc-hpgl = { path = "../fc-hpgl" }
 fc-dxf = { path = "../fc-dxf" }
-fc-script = { path = "../fc-script" }
 geo.workspace = true
-anyhow.workspace = true
+thiserror.workspace = true

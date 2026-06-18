@@ -1,0 +1,9 @@
+# build a board, isolate it, drill an array, export
+new_rect board 0 0 30 20
+new_circle hole 15 10 3
+subtract board hole board2
+isolate board2 board_iso 0.4 2 0.2
+list
+area board2
+bounds board2
+export_gcode board_iso examples\script_out.gcode

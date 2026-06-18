@@ -55,6 +55,7 @@ fn run() -> Result<()> {
         "paint" => cmd_paint(&positional, &opts),
         "ncc" => cmd_ncc(&positional, &opts),
         "cutout" => cmd_cutout(&positional, &opts),
+        "script" => cmd_script(&positional),
         "-h" | "--help" | "help" => {
             print_usage();
             Ok(())
@@ -74,6 +75,7 @@ fn print_usage() {
          \x20 ncc    <gerber>      non-copper clear (clear all non-copper area)\n\
          \x20 cutout <gerber>      mill the board outline with holding tabs\n\
          \x20 drill  <excellon>    drill an Excellon file to G-code\n\
+         \x20 script <file>        run a batch script (see fc-script commands)\n\
          \n\
          Preprocessors (--preproc): grbl, marlin, default, grbl_no_m6, grbl_laser, roland\n\
          \n\
@@ -302,6 +304,23 @@ fn geo_bounds(mp: &geo::MultiPolygon<f64>) -> Option<(f64, f64, f64, f64)> {
     use geo::BoundingRect;
     mp.bounding_rect()
         .map(|r| (r.min().x, r.min().y, r.max().x, r.max().y))
+}
+
+fn cmd_script(pos: &[String]) -> Result<()> {
+    let path = pos.first().context("script: expected a script file path")?;
+    let text = read(path)?;
+    let reg = fc_script::Registry::new();
+    let mut ctx = fc_script::ScriptContext::new();
+    match reg.run_script(&mut ctx, &text) {
+        Ok(outputs) => {
+            for line in outputs {
+                println!("{line}");
+            }
+            eprintln!("script ok: {} objects in context", ctx.names().len());
+            Ok(())
+        }
+        Err(e) => bail!("script error: {e}"),
+    }
 }
 
 enum FileKind {
