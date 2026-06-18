@@ -39,7 +39,15 @@ impl FlatCamApp {
         app.sim_power = 1.0;
         app.units_label = "mm".into();
         app.show_grid = true;
+        // Default to the dark theme — the dark canvas reads far more "pro PCB
+        // viewer" (KiCad/gerbview style); the light theme washed the layers out.
+        app.theme = Theme::Dark;
         app
+    }
+
+    /// Set the colour theme (used by the screenshot tool and the View menu).
+    pub fn set_theme(&mut self, dark: bool) {
+        self.theme = if dark { Theme::Dark } else { Theme::Light };
     }
 }
 
@@ -71,24 +79,24 @@ struct StoredObj {
 fn layer_color(name: &str, kind: ObjectKind) -> egui::Color32 {
     let c = egui::Color32::from_rgb;
     if matches!(kind, ObjectKind::Excellon) {
-        return c(150, 150, 160);
+        return c(240, 150, 40); // drills — orange (crosshair targets)
     }
     if matches!(kind, ObjectKind::CncJob) {
-        return c(80, 180, 255);
+        return c(90, 200, 255); // toolpaths — cyan
     }
     let n = name.to_lowercase();
     if n.contains("edge") || n.contains("outline") || n.contains("profile") {
-        c(232, 200, 64) // board edge — yellow
+        c(235, 70, 70) // board edge — red
     } else if n.contains("mask") {
-        c(60, 150, 95) // soldermask — green
+        c(46, 120, 70) // soldermask — muted green
     } else if n.contains("silk") {
-        c(222, 222, 228) // silkscreen — off-white
+        c(224, 224, 230) // silkscreen — off-white
     } else if n.contains("paste") {
         c(170, 170, 180) // paste — grey
     } else if n.contains("b_cu") || n.contains("b.cu") || n.contains("bottom") {
-        c(72, 132, 220) // bottom copper — blue
+        c(52, 150, 92) // bottom copper — darker green
     } else if n.contains("cu") || n.contains("copper") || n.contains("f_cu") || n.contains("top") {
-        c(204, 122, 64) // top copper — orange
+        c(70, 190, 96) // top copper — green
     } else {
         let (r, g, b) = fc_app::kind_color(kind);
         c(r, g, b)
@@ -2006,6 +2014,20 @@ impl FlatCamApp {
                         painter.add(egui::Shape::line(pts, stroke));
                     }
                 }
+                // Drill targets: a crosshair through each hole centre (like stock).
+                if matches!(s.kind, ObjectKind::Excellon) {
+                    let cross = egui::Stroke::new(1.2, color);
+                    for (ring, _) in &s.rings {
+                        if ring.len() < 3 {
+                            continue;
+                        }
+                        let (sx, sy) = ring.iter().fold((0.0, 0.0), |(ax, ay), &(x, y)| (ax + x, ay + y));
+                        let n = ring.len() as f64;
+                        let cen = self.camera.to_screen((sx / n, sy / n), rect);
+                        painter.line_segment([egui::pos2(cen.x - 5.0, cen.y), egui::pos2(cen.x + 5.0, cen.y)], cross);
+                        painter.line_segment([egui::pos2(cen.x, cen.y - 5.0), egui::pos2(cen.x, cen.y + 5.0)], cross);
+                    }
+                }
             }
 
             // Laser burn-heatmap overlay (the visual optimization view).
@@ -2052,22 +2074,29 @@ impl FlatCamApp {
                 );
             }
 
-            // Cursor crosshair + live coordinate tag.
+            // Cursor crosshair.
             if let Some(p) = response.hover_pos() {
                 let cs = egui::Stroke::new(1.0, pal.cursor);
                 painter.line_segment([egui::pos2(p.x - 8.0, p.y), egui::pos2(p.x + 8.0, p.y)], cs);
                 painter.line_segment([egui::pos2(p.x, p.y - 8.0), egui::pos2(p.x, p.y + 8.0)], cs);
-                if let Some((wx, wy)) = self.cursor_world {
-                    let lx = (p.x + 10.0).max(rect.left() + 44.0).min(rect.right() - 70.0);
-                    let ly = (p.y - 10.0).max(rect.top() + 14.0).min(rect.bottom() - 22.0);
-                    painter.text(
-                        egui::pos2(lx, ly),
-                        egui::Align2::LEFT_BOTTOM,
-                        format!("{}, {}", format_tick(wx), format_tick(wy)),
-                        egui::FontId::proportional(11.0),
-                        pal.ruler_text,
-                    );
-                }
+            }
+            // Coordinate HUD box (top-left of the canvas), like stock FlatCAM.
+            if response.hover_pos().is_some() {
+                let (wx, wy) = self.cursor_world.unwrap_or((0.0, 0.0));
+                let hud = egui::Rect::from_min_size(
+                    egui::pos2(rect.left() + 8.0, rect.top() + 8.0),
+                    egui::vec2(132.0, 40.0),
+                );
+                painter.rect(
+                    hud,
+                    egui::Rounding::same(4.0),
+                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 150),
+                    egui::Stroke::new(1.0, egui::Color32::from_gray(70)),
+                );
+                let font = egui::FontId::monospace(12.0);
+                let tc = egui::Color32::from_gray(235);
+                painter.text(egui::pos2(hud.left() + 8.0, hud.top() + 6.0), egui::Align2::LEFT_TOP, format!("X {wx:9.3}"), font.clone(), tc);
+                painter.text(egui::pos2(hud.left() + 8.0, hud.top() + 21.0), egui::Align2::LEFT_TOP, format!("Y {wy:9.3}"), font, tc);
             }
 
             // Right-click context menu: object actions over an object, else canvas.
@@ -2186,6 +2215,10 @@ impl FlatCamApp {
         }
         let mut to_select: Option<String> = None;
         let mut to_toggle: Option<String> = None;
+        // Per-object colour swatches (precomputed to avoid borrowing self inside
+        // the category closures).
+        let colors: std::collections::HashMap<String, egui::Color32> =
+            self.store.iter().map(|(k, v)| (k.clone(), v.color)).collect();
         // Group objects by type into collapsible categories (like stock FlatCAM:
         // Gerber / Excellon / Geometry / CNC Job / …) instead of one flat list.
         let cats: [(ObjectKind, &str); 6] = [
@@ -2211,6 +2244,10 @@ impl FlatCamApp {
                             if ui.checkbox(&mut vis, "").changed() {
                                 to_toggle = Some(row.name.clone());
                             }
+                            // Layer colour swatch.
+                            let col = colors.get(&row.name).copied().unwrap_or(egui::Color32::GRAY);
+                            let (sw, _) = ui.allocate_exact_size(egui::vec2(11.0, 11.0), egui::Sense::hover());
+                            ui.painter().rect_filled(sw, egui::Rounding::same(2.0), col);
                             if ui.selectable_label(row.selected, &row.name).clicked() {
                                 to_select = Some(row.name.clone());
                             }

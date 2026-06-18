@@ -89,7 +89,10 @@ fn main() -> eframe::Result<()> {
             std::process::exit(2);
         }
     };
-    let files: Vec<String> = args.collect();
+    let mut files: Vec<String> = args.collect();
+    // Optional "--dark" flag anywhere in the file args switches the theme.
+    let dark = files.iter().any(|f| f == "--dark");
+    files.retain(|f| f != "--dark");
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -104,6 +107,7 @@ fn main() -> eframe::Result<()> {
         native_options,
         Box::new(move |cc| {
             let mut app = FlatCamApp::boot(&cc.egui_ctx);
+            app.set_theme(dark);
             for f in &files {
                 app.load_path(f);
             }
