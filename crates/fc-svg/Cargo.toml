@@ -1,0 +1,10 @@
+[package]
+name = "fc-svg"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+fc-geo = { path = "../fc-geo" }
+geo.workspace = true
+roxmltree = "0.20"
+thiserror.workspace = true

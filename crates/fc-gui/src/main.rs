@@ -113,6 +113,32 @@ impl FlatCamApp {
             }
         };
         let lower = path.to_lowercase();
+        if lower.ends_with(".svg") {
+            match fc_svg::parse(&text) {
+                Ok(svg) => {
+                    let mut rings = rings_of(&svg.polygons);
+                    for l in &svg.polylines {
+                        rings.push(l.coords().map(|c| (c.x, c.y)).collect());
+                    }
+                    self.layers = vec![Layer {
+                        name: "SVG".into(),
+                        rings,
+                        color: egui::Color32::from_rgb(160, 200, 90),
+                        closed: false,
+                    }];
+                    self.camera.initialized = false;
+                    self.gerber = None;
+                    self.status = format!(
+                        "Loaded {} ({} shapes, {} paths)",
+                        path,
+                        svg.polygons.0.len(),
+                        svg.polylines.len()
+                    );
+                }
+                Err(err) => self.status = format!("SVG parse error: {err}"),
+            }
+            return;
+        }
         let is_drill = lower.ends_with(".drl")
             || lower.ends_with(".nc")
             || lower.ends_with(".xln")

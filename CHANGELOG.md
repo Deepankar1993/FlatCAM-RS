@@ -2,6 +2,17 @@
 
 All notable changes to the Rust port are recorded here.
 
+## [0.7.0] — Phase 4: SVG import
+
+### Added
+- **`fc-svg`** — SVG → geometry importer (`ParseSVG` port): `<path>` (M/L/H/V/
+  C/S/Q/T/A/Z with Bézier flattening), `<rect>`/`<circle>`/`<ellipse>`/`<line>`/
+  `<polyline>`/`<polygon>`. Closed shapes → polygons, open → polylines. (6 tests)
+- **GUI**: loads `.svg` files onto the canvas.
+
+### Verified
+- `cargo test --workspace`: 119 passed, 0 warnings; `cargo build -p fc-gui` ok.
+
 ## [0.6.0] — Phase 3: utilities batch + GUI export
 
 ### Added

@@ -65,7 +65,7 @@ Group B/C tools — moderate compute, no new subsystems.
 
 | Parser | Python | Complexity | Candidate Rust crate |
 |--------|--------|-----------|----------------------|
-| ⬜ SVG | `ParseSVG` | MED | `usvg` / `svgtypes` |
+| ✅ SVG | `ParseSVG` | — | `fc-svg` (roxmltree + path/bezier flattening); GUI+CLI load |
 | ⬜ Font → glyph polygons | `ParseFont` | MED | `ttf-parser` + outline flattening |
 | ⬜ HPGL2 | `ParseHPGL2` | MED | custom (small command set) |
 | ⬜ DXF (+ splines) | `ParseDXF` | HIGH | `dxf` crate; spline tessellation |
