@@ -21,6 +21,7 @@ fc-app = { path = "../fc-app" }
 fc-editor = { path = "../fc-editor" }
 fc-svg = { path = "../fc-svg" }
 fc-dxf = { path = "../fc-dxf" }
+fc-image = { path = "../fc-image" }
 fc-pdf = { path = "../fc-pdf" }
 fc-laser = { path = "../fc-laser" }
 eframe = "0.29"

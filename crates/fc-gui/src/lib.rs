@@ -12,7 +12,7 @@ use eframe::egui;
 use fc_app::{ObjectKind, Project, ProjectObject};
 use fc_cam::{CutoutParams, IsolationParams, NccParams, PaintParams};
 use fc_gcode::{JobKind, Polyline, Units};
-use fc_geo::MultiPolygon;
+use fc_geo::{LineString, MultiPolygon};
 use std::collections::HashMap;
 
 pub mod help;
@@ -432,6 +432,11 @@ pub struct FlatCamApp {
     /// Two scratch values backing the active `dialog`.
     dlg_a: f64,
     dlg_b: f64,
+    /// Multi-object selection set (object names). The "primary" selection is
+    /// mirrored in `project.selected` (always the last clicked); operations that
+    /// act on "the selected object" use the primary, so single-select flows are
+    /// unchanged. Ctrl+click toggles membership here; a plain click replaces it.
+    selection: Vec<String>,
 }
 
 fn map_gerber_units(u: fc_gerber::Units) -> Units {
@@ -530,6 +535,204 @@ impl FlatCamApp {
             }
             None => self.status = format!("Failed to load {path} (parse error or unreadable)"),
         }
+    }
+
+    // ----- multi-object selection -----
+
+    /// Make `name` the sole selection (primary + set). Mirrors a plain click.
+    fn select_single(&mut self, name: &str) {
+        self.project.select(name);
+        self.selection = vec![name.to_string()];
+        self.rename_buf = name.to_string();
+    }
+
+    /// Toggle `name`'s membership in the multi-selection (Ctrl+click). The
+    /// primary (`project.selected`) becomes the most-recently-added member, or
+    /// `None` when the set empties.
+    fn toggle_selection(&mut self, name: &str) {
+        if let Some(pos) = self.selection.iter().position(|n| n == name) {
+            self.selection.remove(pos);
+            self.project.selected = self.selection.last().cloned();
+        } else {
+            self.selection.push(name.to_string());
+            self.project.select(name);
+            self.rename_buf = name.to_string();
+        }
+    }
+
+    /// Select every object in the project (Edit ▸ Select All).
+    fn select_all_objects(&mut self) {
+        self.selection = self.project.objects.iter().map(|o| o.name.clone()).collect();
+        self.project.selected = self.selection.last().cloned();
+        self.status = format!("Selected {} object(s)", self.selection.len());
+    }
+
+    /// Clear the whole selection (Objects ▸ Deselect All).
+    fn deselect_all(&mut self) {
+        self.selection.clear();
+        self.project.selected = None;
+    }
+
+    /// Whether `name` is part of the current (multi) selection.
+    fn is_selected(&self, name: &str) -> bool {
+        self.project.selected.as_deref() == Some(name) || self.selection.iter().any(|n| n == name)
+    }
+
+    // ----- image import / vector + raster export -----
+
+    /// File ▸ Import ▸ Image — trace a raster image into a Geometry object.
+    fn import_image(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Image", &["png", "jpg", "jpeg", "bmp", "gif"])
+            .pick_file()
+        else {
+            return;
+        };
+        let path = path.to_string_lossy().to_string();
+        match fc_image::trace_file(&path, &fc_image::TraceOptions::default()) {
+            Ok(doc) => {
+                let base = Self::base_name(&path);
+                let name = self.add_object(
+                    &base,
+                    ObjectKind::Geometry,
+                    Units::Mm,
+                    StoredGeom::Region(doc.polygons),
+                    None,
+                    Some(path.clone()),
+                );
+                self.select_single(&name);
+                self.camera.initialized = false;
+                self.log_msg(format!("Imported image {name} ({}×{} px)", doc.width, doc.height));
+            }
+            Err(e) => self.status = format!("Image import failed: {e}"),
+        }
+    }
+
+    /// The selected region split into closed polygons (for fills) and open
+    /// polylines (CNC toolpaths), suitable for the SVG/DXF writers.
+    fn selected_export_geom(&self) -> Option<(MultiPolygon<f64>, Vec<LineString<f64>>, String)> {
+        let name = self.project.selected.clone()?;
+        let obj = self.store.get(&name)?;
+        match &obj.geom {
+            StoredGeom::Region(mp) => Some((mp.clone(), Vec::new(), name)),
+            StoredGeom::Cnc(paths) => {
+                let lines: Vec<LineString<f64>> = paths
+                    .iter()
+                    .filter(|p| p.len() >= 2)
+                    .map(|p| LineString::from(p.iter().map(|&(x, y)| (x, y)).collect::<Vec<_>>()))
+                    .collect();
+                Some((MultiPolygon::new(vec![]), lines, name))
+            }
+            StoredGeom::Excellon(_) => None,
+        }
+    }
+
+    /// File ▸ Export ▸ SVG — write the selected object's geometry as SVG.
+    fn export_svg(&mut self) {
+        let Some((mp, lines, name)) = self.selected_export_geom() else {
+            self.status = "Select a Gerber/Geometry/SVG/CNCJob object to export".into();
+            return;
+        };
+        let svg = fc_svg::write_svg(&mp, &lines);
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("SVG", &["svg"])
+            .set_file_name(format!("{name}.svg"))
+            .save_file()
+        {
+            match std::fs::write(&path, svg) {
+                Ok(()) => self.log_msg(format!("Exported SVG {}", path.to_string_lossy())),
+                Err(e) => self.status = format!("Export SVG failed: {e}"),
+            }
+        }
+    }
+
+    /// File ▸ Export ▸ DXF — write the selected object's geometry as DXF.
+    fn export_dxf(&mut self) {
+        let Some((mp, lines, name)) = self.selected_export_geom() else {
+            self.status = "Select a Gerber/Geometry/SVG/CNCJob object to export".into();
+            return;
+        };
+        let dxf = fc_dxf::write_dxf(&mp, &lines);
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("DXF", &["dxf"])
+            .set_file_name(format!("{name}.dxf"))
+            .save_file()
+        {
+            match std::fs::write(&path, dxf) {
+                Ok(()) => self.log_msg(format!("Exported DXF {}", path.to_string_lossy())),
+                Err(e) => self.status = format!("Export DXF failed: {e}"),
+            }
+        }
+    }
+
+    /// File ▸ Export ▸ PNG — rasterise the current plot (all visible objects) to
+    /// a PNG. egui's framebuffer screenshot needs viewport-command plumbing that
+    /// isn't reachable from a menu action, so we rasterise the geometry directly
+    /// (filled regions + outlines) onto an `image::RgbaImage` at the project's
+    /// extents — a faithful, headless-safe snapshot of the plot.
+    fn export_png(&mut self) {
+        let Some(bounds) = self.all_bounds() else {
+            self.status = "Nothing to export — open or create an object first".into();
+            return;
+        };
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("PNG", &["png"])
+            .set_file_name("plot.png")
+            .save_file()
+        else {
+            return;
+        };
+        let img = self.render_plot_png(bounds, 1200);
+        match img.save(&path) {
+            Ok(()) => self.log_msg(format!("Exported PNG {}", path.to_string_lossy())),
+            Err(e) => self.status = format!("Export PNG failed: {e}"),
+        }
+    }
+
+    /// Rasterise all visible objects into an `image::RgbaImage` whose long edge is
+    /// `max_dim` px. Used by File ▸ Export ▸ PNG.
+    fn render_plot_png(&self, bounds: (f64, f64, f64, f64), max_dim: u32) -> image::RgbaImage {
+        let (minx, miny, maxx, maxy) = bounds;
+        let pad = 0.04 * (maxx - minx).max(maxy - miny).max(1e-6);
+        let (minx, miny, maxx, maxy) = (minx - pad, miny - pad, maxx + pad, maxy + pad);
+        let w = (maxx - minx).max(1e-6);
+        let h = (maxy - miny).max(1e-6);
+        let scale = (max_dim as f64) / w.max(h);
+        let pw = ((w * scale).ceil() as u32).max(1);
+        let ph = ((h * scale).ceil() as u32).max(1);
+        let pal = self.theme.palette();
+        let bg = pal.plot_bg;
+        let mut img = image::RgbaImage::from_pixel(pw, ph, image::Rgba([bg.r(), bg.g(), bg.b(), 255]));
+
+        // World → pixel (Y is flipped: world max-y maps to pixel row 0).
+        let to_px = |x: f64, y: f64| -> (i64, i64) {
+            (((x - minx) * scale) as i64, ((maxy - y) * scale) as i64)
+        };
+
+        // Draw in the same PCB layer order as the on-screen canvas.
+        let mut order: Vec<&ProjectObject> =
+            self.project.objects.iter().filter(|o| o.visible).collect();
+        order.sort_by_key(|o| self.store.get(&o.name).map_or(50, |s| layer_z(&o.name, s.kind)));
+        for obj in order {
+            let Some(s) = self.store.get(&obj.name) else { continue };
+            let c = s.color;
+            // Filled triangles for region kinds.
+            for tri in &s.fill {
+                let pts: Vec<(i64, i64)> = tri.iter().map(|&(x, y)| to_px(x, y)).collect();
+                fill_triangle(&mut img, pts[0], pts[1], pts[2], image::Rgba([c.r(), c.g(), c.b(), 255]));
+            }
+            // Outlines.
+            for (ring, closed) in &s.rings {
+                let pts: Vec<(i64, i64)> = ring.iter().map(|&(x, y)| to_px(x, y)).collect();
+                for w in pts.windows(2) {
+                    draw_line(&mut img, w[0], w[1], image::Rgba([c.r(), c.g(), c.b(), 255]));
+                }
+                if *closed && pts.len() >= 3 {
+                    draw_line(&mut img, pts[pts.len() - 1], pts[0], image::Rgba([c.r(), c.g(), c.b(), 255]));
+                }
+            }
+        }
+        img
     }
 
     fn save_project(&mut self) {
@@ -1602,7 +1805,7 @@ impl FlatCamApp {
                 Key::O if plain => self.transform_selected("origin"),
                 Key::O if shift => self.transform_selected("origin"),
                 Key::J if plain => self.open_dialog(Dialog::Jump),
-                Key::A if cmd => self.set_all_visible(true),
+                Key::A if cmd => self.select_all_objects(),
                 Key::P if shift => self.show_settings = true,
                 // --- File ---
                 Key::N if cmd => self.new_project(),
@@ -2168,19 +2371,24 @@ impl FlatCamApp {
                             self.open_file_dialog("HPGL2", &["plt", "hpgl", "hpg"]);
                             ui.close_menu();
                         }
+                        ui.separator();
+                        if menu_item(ui, "Image as Geometry Object…", "").clicked() {
+                            self.import_image();
+                            ui.close_menu();
+                        }
                     });
                     ui.menu_button("Export", |ui| {
                         if menu_item(ui, "Export SVG…", "").clicked() {
-                            self.status = "Export SVG is not yet ported".into();
+                            self.export_svg();
                             ui.close_menu();
                         }
                         if menu_item(ui, "Export DXF…", "").clicked() {
-                            self.status = "Export DXF is not yet ported".into();
+                            self.export_dxf();
                             ui.close_menu();
                         }
                         ui.separator();
                         if menu_item(ui, "Export PNG…", "").clicked() {
-                            self.status = "Export PNG is not yet ported".into();
+                            self.export_png();
                             ui.close_menu();
                         }
                         ui.separator();
@@ -2309,8 +2517,7 @@ impl FlatCamApp {
                     }
                     ui.separator();
                     if menu_item(ui, "Select All", "Ctrl+A").clicked() {
-                        self.set_all_visible(true);
-                        self.status = "Enabled all objects (port uses single-object selection)".into();
+                        self.select_all_objects();
                         ui.close_menu();
                     }
                     ui.separator();
@@ -2457,11 +2664,11 @@ impl FlatCamApp {
                 });
                 ui.menu_button("Objects", |ui| {
                     if menu_item(ui, "Select All", "").clicked() {
-                        self.set_all_visible(true);
+                        self.select_all_objects();
                         ui.close_menu();
                     }
                     if menu_item(ui, "Deselect All", "").clicked() {
-                        self.project.selected = None;
+                        self.deselect_all();
                         ui.close_menu();
                     }
                     ui.separator();
@@ -2814,15 +3021,24 @@ impl FlatCamApp {
                 }
             } else {
                 // LEFT-click selects the object under the cursor (or clears).
+                // Ctrl/Cmd+click toggles the object in the multi-selection.
                 if response.clicked() {
                     if let Some(pos) = response.interact_pointer_pos() {
                         let w = self.camera.to_world(pos, rect);
+                        let ctrl = ui.input(|i| i.modifiers.command);
                         match self.object_at(w) {
                             Some(n) => {
-                                self.project.select(&n);
-                                self.rename_buf = n;
+                                if ctrl {
+                                    self.toggle_selection(&n);
+                                } else {
+                                    self.select_single(&n);
+                                }
                             }
-                            None => self.project.selected = None,
+                            None => {
+                                if !ctrl {
+                                    self.deselect_all();
+                                }
+                            }
                         }
                     }
                 }
@@ -2835,8 +3051,7 @@ impl FlatCamApp {
                     if let (Some(a), Some(pos)) = (self.band_start.take(), response.interact_pointer_pos()) {
                         let b = self.camera.to_world(pos, rect);
                         if let Some(n) = self.object_in_box(a, b) {
-                            self.project.select(&n);
-                            self.rename_buf = n;
+                            self.select_single(&n);
                         }
                     }
                 }
@@ -2845,18 +3060,17 @@ impl FlatCamApp {
             // Draw visible objects in PCB layer order (copper at the back, then
             // mask/silk/edge, drills + toolpaths on top); the selected object is
             // always drawn last. Fills are OPAQUE so copper/tracks read as solid.
-            let sel = self.project.selected.clone();
             let mut order: Vec<&ProjectObject> =
                 self.project.objects.iter().filter(|o| o.visible).collect();
             order.sort_by_key(|o| {
                 let z = self.store.get(&o.name).map_or(50, |s| layer_z(&o.name, s.kind));
-                let selected = sel.as_deref() == Some(o.name.as_str());
+                let selected = self.is_selected(&o.name);
                 (selected, z)
             });
             for obj in order {
                 let Some(s) = self.store.get(&obj.name) else { continue };
                 let color = s.color;
-                let is_sel = sel.as_deref() == Some(obj.name.as_str());
+                let is_sel = self.is_selected(&obj.name);
                 let is_edge = {
                     let n = obj.name.to_lowercase();
                     n.contains("edge") || n.contains("outline") || n.contains("profile")
@@ -3179,11 +3393,14 @@ impl FlatCamApp {
             ui.weak("(empty — open a file)");
         }
         let mut to_select: Option<String> = None;
+        let mut to_multi: Option<String> = None;
         let mut to_toggle: Option<String> = None;
         // Per-object colour swatches (precomputed to avoid borrowing self inside
         // the category closures).
         let colors: std::collections::HashMap<String, egui::Color32> =
             self.store.iter().map(|(k, v)| (k.clone(), v.color)).collect();
+        // Snapshot of the multi-selection so the row closures don't borrow self.
+        let sel_set: std::collections::HashSet<String> = self.selection.iter().cloned().collect();
         // Group objects by type into collapsible categories (like stock FlatCAM:
         // Gerber / Excellon / Geometry / CNC Job / …) instead of one flat list.
         let cats: [(ObjectKind, &str); 6] = [
@@ -3213,9 +3430,16 @@ impl FlatCamApp {
                             let col = colors.get(&row.name).copied().unwrap_or(egui::Color32::GRAY);
                             let (sw, _) = ui.allocate_exact_size(egui::vec2(11.0, 11.0), egui::Sense::hover());
                             ui.painter().rect_filled(sw, egui::Rounding::same(2.0), col);
-                            let resp = ui.selectable_label(row.selected, &row.name);
+                            // Highlight if part of the (multi) selection, not just
+                            // the primary; Ctrl+click toggles membership.
+                            let highlighted = row.selected || sel_set.contains(&row.name);
+                            let resp = ui.selectable_label(highlighted, &row.name);
                             if resp.clicked() {
-                                to_select = Some(row.name.clone());
+                                if ui.input(|i| i.modifiers.command) {
+                                    to_multi = Some(row.name.clone());
+                                } else {
+                                    to_select = Some(row.name.clone());
+                                }
                             }
                             // Right-click → full object context menu (Enable/Disable,
                             // Set Color, View Source, Edit, Copy, Delete, Save, Properties).
@@ -3229,8 +3453,10 @@ impl FlatCamApp {
             self.camera.initialized = false;
         }
         if let Some(n) = to_select {
-            self.project.select(&n);
-            self.rename_buf = n;
+            self.select_single(&n);
+        }
+        if let Some(n) = to_multi {
+            self.toggle_selection(&n);
         }
 
         // Selected-object actions.
@@ -3351,6 +3577,61 @@ fn clone_geom(g: &StoredGeom) -> StoredGeom {
         StoredGeom::Region(mp) => StoredGeom::Region(mp.clone()),
         StoredGeom::Cnc(p) => StoredGeom::Cnc(p.clone()),
         StoredGeom::Excellon(e) => StoredGeom::Excellon(e.clone()),
+    }
+}
+
+/// Bresenham line into an `RgbaImage` (used by PNG export rasterisation).
+fn draw_line(img: &mut image::RgbaImage, a: (i64, i64), b: (i64, i64), color: image::Rgba<u8>) {
+    let (w, h) = (img.width() as i64, img.height() as i64);
+    let (mut x0, mut y0) = a;
+    let (x1, y1) = b;
+    let dx = (x1 - x0).abs();
+    let dy = -(y1 - y0).abs();
+    let sx = if x0 < x1 { 1 } else { -1 };
+    let sy = if y0 < y1 { 1 } else { -1 };
+    let mut err = dx + dy;
+    loop {
+        if x0 >= 0 && x0 < w && y0 >= 0 && y0 < h {
+            img.put_pixel(x0 as u32, y0 as u32, color);
+        }
+        if x0 == x1 && y0 == y1 {
+            break;
+        }
+        let e2 = 2 * err;
+        if e2 >= dy {
+            err += dy;
+            x0 += sx;
+        }
+        if e2 <= dx {
+            err += dx;
+            y0 += sy;
+        }
+    }
+}
+
+/// Scanline-fill a triangle into an `RgbaImage` (used by PNG export).
+fn fill_triangle(img: &mut image::RgbaImage, a: (i64, i64), b: (i64, i64), c: (i64, i64), color: image::Rgba<u8>) {
+    let (iw, ih) = (img.width() as i64, img.height() as i64);
+    let min_y = a.1.min(b.1).min(c.1).max(0);
+    let max_y = a.1.max(b.1).max(c.1).min(ih - 1);
+    let edge = |p: (i64, i64), q: (i64, i64), y: i64| -> Option<f64> {
+        if (p.1 <= y && q.1 > y) || (q.1 <= y && p.1 > y) {
+            let t = (y - p.1) as f64 / (q.1 - p.1) as f64;
+            Some(p.0 as f64 + t * (q.0 - p.0) as f64)
+        } else {
+            None
+        }
+    };
+    for y in min_y..=max_y {
+        let mut xs: Vec<f64> = [edge(a, b, y), edge(b, c, y), edge(c, a, y)].into_iter().flatten().collect();
+        if xs.len() < 2 {
+            continue;
+        }
+        xs.sort_by(|p, q| p.partial_cmp(q).unwrap());
+        let (x0, x1) = (xs[0].floor() as i64, xs[xs.len() - 1].ceil() as i64);
+        for x in x0.max(0)..=x1.min(iw - 1) {
+            img.put_pixel(x as u32, y as u32, color);
+        }
     }
 }
 

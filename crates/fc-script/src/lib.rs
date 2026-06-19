@@ -21,6 +21,7 @@ mod io;
 mod io_cmds;
 mod more_cmds;
 mod query;
+mod sys_cmds;
 mod transform_cmds;
 
 #[derive(thiserror::Error, Debug)]
@@ -75,6 +76,12 @@ pub fn make_cnc(paths: Vec<Polyline>, units: Units, tool_dia: f64) -> Obj {
 #[derive(Default)]
 pub struct ScriptContext {
     pub objects: BTreeMap<String, Obj>,
+    /// Simple per-context system/options settings map (parity with FlatCAM's
+    /// `set_sys`/`get_sys`). Empty by default.
+    pub sysvars: BTreeMap<String, String>,
+    /// Fallback folder path used by file commands (parity with `get_path`/
+    /// `set_path`). Empty by default.
+    pub path: String,
 }
 
 impl ScriptContext {
@@ -128,6 +135,7 @@ impl Registry {
             more_cmds::commands(),
             io_cmds::commands(),
             build_cmds::commands(),
+            sys_cmds::commands(),
         ] {
             for (name, f) in group {
                 map.insert(name, f);

@@ -26,7 +26,21 @@ pub enum AppError {
     Json(#[from] serde_json::Error),
     #[error("object not found: {0}")]
     NotFound(String),
+    #[error("compression error: {0}")]
+    Compression(String),
 }
+
+/// Leading byte of the LZMA (`.lzma` / "alone") container we emit for
+/// compressed projects. It is the standard LZMA *properties* byte for the
+/// default `lc=3, lp=0, pb=2` settings (`0x5D`), and serves as our sniff
+/// signature on load. It cannot collide with plain JSON, which starts with
+/// `{`, `[`, a quote, or ASCII whitespace — all distinct from `0x5D`.
+///
+/// We use the raw LZMA format rather than XZ because the pure-Rust `lzma-rs`
+/// crate's XZ *encoder* stores data uncompressed, whereas its LZMA encoder
+/// performs real LZ compression. Both decoders work; the LZMA path is the one
+/// that actually shrinks the file.
+pub const LZMA_MAGIC: u8 = 0x5D;
 
 /// The kind of an object in the project tree (mirrors FlatCAM's `kind` strings).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -179,6 +193,56 @@ impl Project {
         let text = std::fs::read_to_string(path)?;
         Self::from_json(&text)
     }
+
+    // --- LZMA/XZ-compressed persistence -------------------------------------
+    //
+    // Project files are JSON, which compresses extremely well (the format is
+    // repetitive: repeated keys, indentation, option strings). We serialize to
+    // the same JSON as `to_json`, then wrap it in an XZ container. We picked the
+    // pure-Rust `lzma-rs` crate for the codec so there is no dependency on a
+    // system `liblzma` and it builds cleanly on Windows MSVC.
+
+    /// Serialize this project to JSON and compress it into an LZMA container.
+    /// The returned bytes begin with [`LZMA_MAGIC`].
+    pub fn to_compressed_bytes(&self) -> Result<Vec<u8>, AppError> {
+        let json = self.to_json()?;
+        let mut out = Vec::new();
+        lzma_rs::lzma_compress(&mut json.as_bytes(), &mut out)
+            .map_err(|e| AppError::Compression(format!("lzma compress: {e}")))?;
+        Ok(out)
+    }
+
+    /// Decode bytes that are *either* plain JSON or an LZMA-compressed project,
+    /// auto-detecting which by sniffing the leading [`LZMA_MAGIC`] byte.
+    pub fn from_bytes_auto(bytes: &[u8]) -> Result<Self, AppError> {
+        if bytes.first() == Some(&LZMA_MAGIC) {
+            let mut decompressed = Vec::new();
+            let mut reader = bytes;
+            lzma_rs::lzma_decompress(&mut reader, &mut decompressed)
+                .map_err(|e| AppError::Compression(format!("lzma decompress: {e}")))?;
+            let text = String::from_utf8(decompressed)
+                .map_err(|e| AppError::Compression(format!("utf8: {e}")))?;
+            Self::from_json(&text)
+        } else {
+            // Treat as plain JSON (skips a possible UTF-8 BOM defensively).
+            let text = std::str::from_utf8(bytes)
+                .map_err(|e| AppError::Compression(format!("utf8: {e}")))?;
+            Self::from_json(text.trim_start_matches('\u{feff}'))
+        }
+    }
+
+    /// Save this project as an XZ-compressed file.
+    pub fn save_project_compressed(&self, path: impl AsRef<Path>) -> Result<(), AppError> {
+        std::fs::write(path, self.to_compressed_bytes()?)?;
+        Ok(())
+    }
+
+    /// Load a project from a file that is *either* plain JSON or XZ-compressed,
+    /// auto-detecting the format. Complements the plain [`Project::load`].
+    pub fn load_project_auto(path: impl AsRef<Path>) -> Result<Self, AppError> {
+        let bytes = std::fs::read(path)?;
+        Self::from_bytes_auto(&bytes)
+    }
 }
 
 #[cfg(test)]
@@ -238,5 +302,81 @@ mod tests {
             back.get("top.gbr").unwrap().options.get("isolation_tool_dia"),
             Some(&"0.4".to_string())
         );
+    }
+
+    #[test]
+    fn compressed_roundtrip_equals_project() {
+        let p = sample();
+        let bytes = p.to_compressed_bytes().unwrap();
+        let back = Project::from_bytes_auto(&bytes).unwrap();
+        assert_eq!(p, back);
+    }
+
+    #[test]
+    fn compressed_bytes_carry_lzma_magic() {
+        let p = sample();
+        let bytes = p.to_compressed_bytes().unwrap();
+        assert_eq!(bytes.first(), Some(&LZMA_MAGIC), "compressed blob must be LZMA");
+    }
+
+    #[test]
+    fn auto_detect_handles_plain_json_and_compressed() {
+        let p = sample();
+
+        // Plain JSON blob.
+        let json_bytes = p.to_json().unwrap().into_bytes();
+        let from_json = Project::from_bytes_auto(&json_bytes).unwrap();
+        assert_eq!(p, from_json);
+
+        // Compressed blob.
+        let comp_bytes = p.to_compressed_bytes().unwrap();
+        let from_comp = Project::from_bytes_auto(&comp_bytes).unwrap();
+        assert_eq!(p, from_comp);
+
+        // Both paths yield the same project.
+        assert_eq!(from_json, from_comp);
+    }
+
+    #[test]
+    fn compression_shrinks_repetitive_project() {
+        // A project with many similar objects compresses much smaller than its
+        // JSON, because the JSON is highly repetitive.
+        let mut p = Project::new("mm");
+        for i in 0..200 {
+            p.add(
+                ProjectObject::new(format!("obj_{i:04}.gbr"), ObjectKind::Gerber)
+                    .with_source("/tmp/repeated/source/path/file.gbr")
+                    .set("isolation_tool_dia", "0.4")
+                    .set("isolation_overlap", "0.15"),
+            )
+            .unwrap();
+        }
+        let json_len = p.to_json().unwrap().len();
+        let comp_len = p.to_compressed_bytes().unwrap().len();
+        assert!(
+            comp_len < json_len,
+            "compressed ({comp_len}) should be smaller than JSON ({json_len})"
+        );
+    }
+
+    #[test]
+    fn save_and_load_compressed_file_roundtrip() {
+        let p = sample();
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("fc_app_test_{}.fcz", std::process::id()));
+
+        p.save_project_compressed(&path).unwrap();
+        // Auto-load must detect the compressed format.
+        let back = Project::load_project_auto(&path).unwrap();
+        assert_eq!(p, back);
+
+        // Auto-load must also handle a plain-JSON file written by `save`.
+        let json_path = dir.join(format!("fc_app_test_{}.json", std::process::id()));
+        p.save(&json_path).unwrap();
+        let back_json = Project::load_project_auto(&json_path).unwrap();
+        assert_eq!(p, back_json);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&json_path);
     }
 }

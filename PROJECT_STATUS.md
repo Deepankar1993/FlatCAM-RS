@@ -16,7 +16,7 @@ GIL. This rebuild keeps the Python original untouched and reimplements the engin
 |---|---|
 | **Language / toolchain** | Rust 2021, Cargo workspace |
 | **Crates** | 17 (`crates/*`) |
-| **Tests** | ~753 passing across the workspace, 0 warnings (last full run) |
+| **Tests** | ~788 passing across the workspace, 0 warnings (last full run) |
 | **GUI** | Native desktop app on `eframe`/`egui` 0.29 — working |
 | **CLI** | Headless `flatcam-rs` binary — working |
 | **Validation** | Real KiCad board (Gerber X2 + Excellon) parses and machines correctly |
@@ -63,7 +63,12 @@ renumbering, stats; G-code reader for re-import.
 model, direction/power/focus calibration grids, isotonic power curve, cross-hatch
 and banded raster fill, burn-uniformity simulation. Validated on real KiCad B_Cu.
 
-**Scripting:** headless engine with ~28 commands; CLI `script <file>`.
+**Scripting:** headless engine with ~84 commands (io/cam/geo/query/transform/
+analyze/edit/build/sys: open/export every format, object construction, milling,
+joins, splits, system vars, project save/load); CLI `script <file>`.
+
+**More IO:** SVG/DXF/PDF **export** (hand-rolled writers), raster image **import**
+(`fc-image`), project save/load with optional **LZMA** compression + auto-detect.
 
 ## GUI status (`fc-gui`)
 
@@ -84,15 +89,19 @@ and banded raster fill, burn-uniformity simulation. Validated on real KiCad B_Cu
   menu while editing.
 - **Plugins:** 31 tools in the Plugins menu (19 wired to real `fc_cam` ops, the
   rest honest disabled stubs), each with a generic parameter form + Apply.
+- **Multi-object selection:** Ctrl/Cmd+click toggles objects in/out of the
+  selection, plain click replaces, Select All / Deselect All and Ctrl+A drive the
+  real multi-set; all selected objects highlight in tree and canvas.
+- **Import/Export wired:** File ▸ Import ▸ Image (raster→geometry via `fc-image`),
+  File ▸ Export ▸ SVG / DXF / PNG now write real files for the selected object.
 - **Laser panel:** beam editor, astigmatism/focus controls, polar plot, burn
   heatmap overlay, fill/raster ops.
 
-**Known GUI limitations:** single-object selection (no true multi-select yet);
-several File menu items (scripting, SVG/DXF/PNG export, multi-object join, tools
-database, print-to-PDF) are present for parity but show a "not yet ported" status
-rather than full behavior; interactive editors are basic (tool placement + bake).
-The GUI needs a display — verify with `cargo run --release -p fc-gui` or render a
-PNG via the `screenshot` binary.
+**Known GUI limitations:** remaining File-menu items (scripting shell, multi-object
+join, tools database, print-to-PDF) still show "not yet ported"; interactive
+editors are basic (tool placement + bake); right-click single-object context
+actions set only the primary selection. The GUI needs a display — verify with
+`cargo run --release -p fc-gui` or render a PNG via the `screenshot` binary.
 
 ## Testing & validation
 

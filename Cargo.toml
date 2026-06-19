@@ -40,6 +40,9 @@ rayon = "1"
 # Raster image decoding for fc-image (ToolImage port). Only the codecs we
 # actually trace from PCB raster exports: PNG, JPEG and BMP.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
+# Pure-Rust LZMA/XZ codec for compressed project files in fc-app. No system
+# liblzma required, so it builds cleanly on Windows MSVC.
+lzma-rs = "0.3"
 
 # Optimized release profile — the whole point of the Rust port is speed.
 [profile.release]

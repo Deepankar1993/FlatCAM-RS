@@ -22,6 +22,9 @@
 
 use fc_geo::{Coord, LineString, MultiPolygon, Polygon};
 
+pub mod writer;
+pub use writer::*;
+
 /// Number of straight segments used to flatten a single cubic Bézier curve.
 pub const BEZIER_SEGMENTS: usize = 12;
 
