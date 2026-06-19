@@ -21,6 +21,7 @@ mod io;
 mod io_cmds;
 mod more_cmds;
 mod query;
+mod select_cmds;
 mod sys_cmds;
 mod transform_cmds;
 
@@ -82,6 +83,10 @@ pub struct ScriptContext {
     /// Fallback folder path used by file commands (parity with `get_path`/
     /// `set_path`). Empty by default.
     pub path: String,
+    /// The currently active/selected object name (parity with FlatCAM's notion
+    /// of the "active" object that selection/plot commands operate on). `None`
+    /// when nothing is selected. Set via `set_active`, read via `get_active`.
+    pub active: Option<String>,
 }
 
 impl ScriptContext {
@@ -136,6 +141,7 @@ impl Registry {
             io_cmds::commands(),
             build_cmds::commands(),
             sys_cmds::commands(),
+            select_cmds::commands(),
         ] {
             for (name, f) in group {
                 map.insert(name, f);

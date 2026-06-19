@@ -437,6 +437,9 @@ pub struct FlatCamApp {
     /// act on "the selected object" use the primary, so single-select flows are
     /// unchanged. Ctrl+click toggles membership here; a plain click replaces it.
     selection: Vec<String>,
+    /// Tools Database window (Options ▸ Tools Database) — read-only listing of
+    /// the built-in `fc_cam::toolsdb` presets.
+    show_tools_db: bool,
 }
 
 fn map_gerber_units(u: fc_gerber::Units) -> Units {
@@ -993,6 +996,181 @@ impl FlatCamApp {
         self.status = format!("Deleted {sel}");
     }
 
+    // ----- multi-aware context actions -----
+
+    /// The set of objects a right-click action should target. If `name` is part
+    /// of the current multi-selection, the whole selection is returned (in
+    /// project order); otherwise just `name` (and it becomes the new selection).
+    fn context_targets(&mut self, name: &str) -> Vec<String> {
+        if self.is_selected(name) && self.selection.len() > 1 {
+            // Preserve project order for stable, predictable behaviour.
+            self.project
+                .objects
+                .iter()
+                .map(|o| o.name.clone())
+                .filter(|n| self.selection.iter().any(|s| s == n))
+                .collect()
+        } else {
+            self.select_single(name);
+            vec![name.to_string()]
+        }
+    }
+
+    /// Delete every object in `targets` (and descendants). Used by the
+    /// multi-aware context menu and toolbar Delete over a multi-selection.
+    fn delete_objects(&mut self, targets: &[String]) {
+        for name in targets {
+            for removed in self.project.descendants(name) {
+                self.store.remove(&removed);
+            }
+            self.project.remove_cascade(name);
+            self.store.remove(name);
+            self.selection.retain(|n| n != name);
+        }
+        if self.project.selected.as_deref().is_some_and(|s| targets.iter().any(|t| t == s)) {
+            self.project.selected = self.selection.last().cloned();
+        }
+        self.camera.initialized = false;
+        self.status = format!("Deleted {} object(s)", targets.len());
+    }
+
+    /// Duplicate every object in `targets` (with its stored geometry).
+    fn copy_objects(&mut self, targets: &[String]) {
+        for sel in targets {
+            if let Some(n) = self.project.duplicate(sel) {
+                if let Some(s) = self.store.get(sel) {
+                    let clone = StoredObj {
+                        kind: s.kind,
+                        units: s.units,
+                        geom: clone_geom(&s.geom),
+                        fill: s.fill.clone(),
+                        rings: s.rings.clone(),
+                        color: s.color,
+                        gcode: s.gcode.clone(),
+                    };
+                    self.store.insert(n, clone);
+                }
+            }
+        }
+        self.status = format!("Copied {} object(s)", targets.len());
+    }
+
+    /// Set plot visibility for every object in `targets`.
+    fn set_objects_visible(&mut self, targets: &[String], vis: bool) {
+        for name in targets {
+            self.set_object_visible(name, vis);
+        }
+    }
+
+    // ----- multi-object join (Edit ▸ Join Objects) -----
+
+    /// Union the region geometry of all currently-selected objects into one new
+    /// Geometry object. Excellon/CNCJob selections (no fillable region) are
+    /// skipped and noted in the status line.
+    fn join_selected(&mut self) {
+        // The real multi-selection set, in project order.
+        let names: Vec<String> = self
+            .project
+            .objects
+            .iter()
+            .map(|o| o.name.clone())
+            .filter(|n| self.is_selected(n))
+            .collect();
+        if names.len() < 2 {
+            self.status = "Join needs 2+ selected objects (Ctrl+click to multi-select)".into();
+            return;
+        }
+        let mut polys: Vec<fc_geo::Polygon<f64>> = Vec::new();
+        let mut units = Units::Mm;
+        let mut joined = 0usize;
+        let mut skipped: Vec<String> = Vec::new();
+        for n in &names {
+            match self.store.get(n) {
+                Some(StoredObj { geom: StoredGeom::Region(mp), units: u, .. }) => {
+                    if joined == 0 {
+                        units = *u;
+                    }
+                    polys.extend(mp.0.iter().cloned());
+                    joined += 1;
+                }
+                _ => skipped.push(n.clone()),
+            }
+        }
+        if joined < 2 {
+            self.status = "Join needs 2+ region objects (Gerber/Geometry/SVG)".into();
+            return;
+        }
+        let merged = fc_geo::union_all(polys);
+        let base = format!("join_{}", joined);
+        let name = self.add_object(&base, ObjectKind::Geometry, units, StoredGeom::Region(merged), None, None);
+        self.select_single(&name);
+        self.camera.initialized = false;
+        self.status = if skipped.is_empty() {
+            format!("Joined {joined} object(s) into {name}")
+        } else {
+            format!("Joined {joined} region(s) into {name}; skipped {} non-region: {}", skipped.len(), skipped.join(", "))
+        };
+        self.log_msg(self.status.clone());
+    }
+
+    // ----- print to PDF (File ▸ Print) -----
+
+    /// Build a combined (MultiPolygon, polylines) over the selection and write a
+    /// PDF via `fc_pdf::write_pdf_default` to an rfd-chosen path.
+    fn print_pdf(&mut self) {
+        // Target the whole multi-selection if present, else the primary.
+        let names: Vec<String> = if self.selection.len() > 1 {
+            self.project
+                .objects
+                .iter()
+                .map(|o| o.name.clone())
+                .filter(|n| self.is_selected(n))
+                .collect()
+        } else {
+            match self.project.selected.clone() {
+                Some(n) => vec![n],
+                None => Vec::new(),
+            }
+        };
+        if names.is_empty() {
+            self.status = "Select an object to print to PDF".into();
+            return;
+        }
+        let mut polys: Vec<fc_geo::Polygon<f64>> = Vec::new();
+        let mut lines: Vec<LineString<f64>> = Vec::new();
+        for n in &names {
+            match self.store.get(n) {
+                Some(StoredObj { geom: StoredGeom::Region(mp), .. }) => {
+                    polys.extend(mp.0.iter().cloned());
+                }
+                Some(StoredObj { geom: StoredGeom::Cnc(paths), .. }) => {
+                    for p in paths.iter().filter(|p| p.len() >= 2) {
+                        lines.push(LineString::from(p.iter().map(|&(x, y)| (x, y)).collect::<Vec<_>>()));
+                    }
+                }
+                _ => {}
+            }
+        }
+        if polys.is_empty() && lines.is_empty() {
+            self.status = "Selection has no printable geometry (regions/toolpaths)".into();
+            return;
+        }
+        // Union overlapping polygons so the PDF fills cleanly.
+        let mp = fc_geo::union_all(polys);
+        let bytes = fc_pdf::write_pdf_default(&mp, &lines);
+        let default_name = format!("{}.pdf", names.first().map(String::as_str).unwrap_or("plot"));
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("PDF", &["pdf"])
+            .set_file_name(default_name)
+            .save_file()
+        {
+            match std::fs::write(&path, bytes) {
+                Ok(()) => self.log_msg(format!("Printed PDF {}", path.to_string_lossy())),
+                Err(e) => self.status = format!("Print PDF failed: {e}"),
+            }
+        }
+    }
+
     /// Open a multi-select file picker, optionally filtered, and load every
     /// chosen file (Gerber/Excellon boards usually come as several files).
     fn open_file_dialog(&mut self, filter_name: &str, exts: &[&str]) {
@@ -1499,14 +1677,24 @@ impl FlatCamApp {
     /// Build the object-specific section of a right-click menu (shared by the
     /// canvas context menu and the project-tree context menu).
     fn object_context_menu(&mut self, ui: &mut egui::Ui, name: &str) {
-        ui.label(egui::RichText::new(name).strong());
+        // When the right-clicked object is part of a multi-selection, the
+        // batch-capable actions (Enable/Disable Plot, Copy, Delete) act over the
+        // WHOLE selection; otherwise they act on just this object.
+        let multi = self.is_selected(name) && self.selection.len() > 1;
+        if multi {
+            ui.label(egui::RichText::new(format!("{} selected", self.selection.len())).strong());
+        } else {
+            ui.label(egui::RichText::new(name).strong());
+        }
         ui.separator();
         if ui.button("Enable Plot").clicked() {
-            self.set_object_visible(name, true);
+            let targets = self.context_targets(name);
+            self.set_objects_visible(&targets, true);
             ui.close_menu();
         }
         if ui.button("Disable Plot").clicked() {
-            self.set_object_visible(name, false);
+            let targets = self.context_targets(name);
+            self.set_objects_visible(&targets, false);
             ui.close_menu();
         }
         ui.separator();
@@ -1539,13 +1727,13 @@ impl FlatCamApp {
             ui.close_menu();
         }
         if ui.button("Copy").clicked() {
-            self.project.select(name);
-            self.copy_selected();
+            let targets = self.context_targets(name);
+            self.copy_objects(&targets);
             ui.close_menu();
         }
         if ui.button("Delete").clicked() {
-            self.project.select(name);
-            self.delete_selected();
+            let targets = self.context_targets(name);
+            self.delete_objects(&targets);
             ui.close_menu();
         }
         if ui.button("Save").clicked() {
@@ -1814,7 +2002,7 @@ impl FlatCamApp {
                 Key::S if cmd_shift => self.save_project(),
                 Key::G if cmd => self.open_file_dialog("Gerber", &["gbr", "ger", "gtl", "gbl", "gto", "gbo", "gts", "gbs"]),
                 Key::E if cmd => self.open_file_dialog("Excellon", &["drl", "xln", "exc", "txt"]),
-                Key::P if cmd => self.status = "Print to PDF is not yet ported".into(),
+                Key::P if cmd => self.print_pdf(),
                 // --- Options ---
                 Key::R if shift => self.open_dialog(Dialog::Rotate),
                 Key::X if shift => self.open_dialog(Dialog::SkewX),
@@ -1828,7 +2016,7 @@ impl FlatCamApp {
                     self.map_selected_region("Flip Y", |mp| fc_geo::transform::mirror_y(mp, cx));
                 }
                 Key::S if alt => self.show_source = true,
-                Key::D if cmd => self.status = "Tools Database is not yet ported".into(),
+                Key::D if cmd => self.show_tools_db = true,
                 // --- Help ---
                 Key::F1 if plain => self.open_url("http://flatcam.org/manual/index.html"),
                 Key::F3 if plain => self.show_shortcuts = true,
@@ -2419,7 +2607,7 @@ impl FlatCamApp {
                     });
                     ui.separator();
                     if menu_item(ui, "Print (PDF)", "Ctrl+P").clicked() {
-                        self.status = "Print to PDF is not yet ported".into();
+                        self.print_pdf();
                         ui.close_menu();
                     }
                     ui.separator();
@@ -2468,15 +2656,15 @@ impl FlatCamApp {
                     });
                     ui.menu_button("Join Objects", |ui| {
                         if menu_item(ui, "Join Geo/Gerber/Exc -> Geo", "").clicked() {
-                            self.status = "Join needs multi-select (not yet ported)".into();
+                            self.join_selected();
                             ui.close_menu();
                         }
                         if menu_item(ui, "Join Excellon(s) -> Excellon", "").clicked() {
-                            self.status = "Join needs multi-select (not yet ported)".into();
+                            self.join_selected();
                             ui.close_menu();
                         }
                         if menu_item(ui, "Join Gerber(s) -> Gerber", "").clicked() {
-                            self.status = "Join needs multi-select (not yet ported)".into();
+                            self.join_selected();
                             ui.close_menu();
                         }
                     });
@@ -2644,7 +2832,7 @@ impl FlatCamApp {
                         ui.close_menu();
                     }
                     if menu_item(ui, "Tools Database", "Ctrl+D").clicked() {
-                        self.status = "Tools Database is not yet ported".into();
+                        self.show_tools_db = true;
                         ui.close_menu();
                     }
                     ui.separator();
@@ -2872,6 +3060,9 @@ impl FlatCamApp {
                 }
                 if tool_button(ui, "settings", "Settings").clicked() {
                     self.show_settings = !self.show_settings;
+                }
+                if tool_button(ui, "settings", "Tools DB").clicked() {
+                    self.show_tools_db = !self.show_tools_db;
                 }
                 ui.separator();
                 ui.add(widgets::toggle(&mut self.fill_on));
@@ -3345,6 +3536,51 @@ impl FlatCamApp {
             }
         });
         self.show_source = src_open;
+
+        // Tools Database window (Options ▸ Tools Database) — read-only listing of
+        // the built-in `fc_cam::toolsdb` presets (milling, drilling, V-bits).
+        egui::Window::new("Tools Database")
+            .open(&mut self.show_tools_db)
+            .resizable(true)
+            .default_size([520.0, 380.0])
+            .show(ctx, |ui| {
+                ui.label("Built-in tool presets (read-only). Columns are mm / type / feeds / spindle.");
+                ui.separator();
+                let mut tools = fc_cam::toolsdb::default_milling_tools();
+                tools.extend(fc_cam::toolsdb::default_drill_tools());
+                tools.extend(fc_cam::toolsdb::default_vbits());
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    egui::Grid::new("tools_db_grid")
+                        .num_columns(6)
+                        .striped(true)
+                        .spacing([14.0, 4.0])
+                        .show(ui, |ui| {
+                            ui.strong("Dia (mm)");
+                            ui.strong("Type");
+                            ui.strong("Name");
+                            ui.strong("Feed XY");
+                            ui.strong("Feed Z");
+                            ui.strong("Spindle");
+                            ui.end_row();
+                            for t in &tools {
+                                let ty = match t.kind {
+                                    fc_cam::toolsdb::ToolType::Milling => "Milling",
+                                    fc_cam::toolsdb::ToolType::Drilling => "Drilling",
+                                    fc_cam::toolsdb::ToolType::Vbit => "V-bit",
+                                };
+                                ui.monospace(format!("{:.2}", t.diameter));
+                                ui.label(ty);
+                                ui.label(&t.name);
+                                ui.monospace(format!("{:.0}", t.feed_xy));
+                                ui.monospace(format!("{:.0}", t.feed_z));
+                                ui.monospace(format!("{:.0}", t.spindle));
+                                ui.end_row();
+                            }
+                        });
+                });
+                ui.separator();
+                ui.weak(format!("{} preset(s). Editing tools is a future step.", tools.len()));
+            });
 
         // Numeric-parameter modal for Edit/Options actions (Num Move, Jump,
         // Custom Origin, Rotate, Skew X/Y).

@@ -168,15 +168,17 @@ mod tests {
 
     #[test]
     fn square_with_hole_round_trips() {
-        // Exterior + hole -> two closed rings -> two closed polygons on re-parse.
+        // Exterior + hole -> two closed rings -> the importer reconstructs the
+        // nesting, so they re-parse as ONE polygon with one interior ring.
         let mp = MultiPolygon::new(vec![square_with_hole()]);
         let dxf = write_dxf(&mp, &[]);
         let doc = parse(&dxf).unwrap();
-        assert_eq!(doc.polygons.0.len(), 2, "exterior + hole = 2 closed rings");
+        assert_eq!(doc.polygons.0.len(), 1, "exterior + hole nest into 1 polygon");
+        assert_eq!(doc.polygons.0[0].interiors().len(), 1);
 
         let total: f64 = fc_geo::area(&doc.polygons);
-        // 10x10 outer ring (100) + 4x4 inner ring (16), both as filled rings.
-        assert!((total - 116.0).abs() < 1e-6, "area was {total}");
+        // Net filled area = 10x10 outer (100) - 4x4 hole (16) = 84.
+        assert!((total - 84.0).abs() < 1e-6, "area was {total}");
     }
 
     #[test]

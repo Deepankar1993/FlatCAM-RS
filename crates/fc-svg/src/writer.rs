@@ -307,19 +307,19 @@ mod tests {
         let svg = write_svg(&mp, &[]);
 
         // The hole is emitted as a second `M...Z` subpath inside the same
-        // `<path>`. The importer's path parser does not perform ring/hole
-        // nesting — each closed subpath becomes its own polygon — so the
-        // exterior and the hole come back as two separate closed polygons.
-        // (This matches the DXF round-trip, where each ring is a closed
-        // LWPOLYLINE.) The hole is still "preserved" in the sense that its
-        // boundary survives as a distinct ring.
+        // `<path>`. The importer now reconstructs exterior/hole nesting, so the
+        // two closed rings come back as ONE polygon with one interior ring.
         let doc = parse(&svg).unwrap();
-        assert_eq!(doc.polygons.0.len(), 2, "exterior + hole = 2 closed rings");
+        assert_eq!(doc.polygons.0.len(), 1, "exterior + hole nest into 1 polygon");
+        assert_eq!(
+            doc.polygons.0[0].interiors().len(),
+            1,
+            "the hole is reconstructed as one interior ring"
+        );
 
-        // Both rings re-parse as filled: 100 (outer) + 16 (inner) = 116,
-        // regardless of Y-flip.
+        // Net filled area = 100 (outer) − 16 (inner) = 84, regardless of Y-flip.
         let a = area(&doc.polygons);
-        assert!((a - 116.0).abs() < 1e-6, "area was {a}");
+        assert!((a - 84.0).abs() < 1e-6, "area was {a}");
 
         // Bounds are preserved under the mid-line reflection.
         let (bx0, by0, bx1, by1) = bounds(&doc.polygons).unwrap();
@@ -377,8 +377,10 @@ mod tests {
         ]);
         let svg = write_svg(&mp, &[ls]);
         let doc = parse(&svg).unwrap();
-        // square-with-hole -> 2 rings (see square_with_hole_round_trips_with_yflip).
-        assert_eq!(doc.polygons.0.len(), 2);
+        // square-with-hole -> 1 nested polygon (see square_with_hole_round_trips_with_yflip).
+        assert_eq!(doc.polygons.0.len(), 1);
+        assert_eq!(doc.polygons.0[0].interiors().len(), 1);
+        assert!((area(&doc.polygons) - 84.0).abs() < 1e-6);
         assert_eq!(doc.polylines.len(), 1);
         assert_eq!(doc.polylines[0].0.len(), 2);
     }

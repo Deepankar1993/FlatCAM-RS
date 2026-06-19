@@ -11,13 +11,21 @@ use fc_geo::{buffer_path, circle, MultiPolygon};
 use geo::Coord;
 use std::collections::BTreeMap;
 
+pub mod pcbwizard;
 pub mod writer;
+pub use pcbwizard::parse_pcbwizard;
 pub use writer::write_excellon;
 
 #[derive(thiserror::Error, Debug)]
 pub enum ExcellonError {
     #[error("empty drill file")]
     Empty,
+    /// A `.DRL` selected a tool code that the `.INF` file never defined.
+    #[error("tool code {0} not defined in .INF")]
+    UnknownTool(String),
+    /// A line in the `.INF` or `.DRL` could not be understood.
+    #[error("parse error: {0}")]
+    Parse(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

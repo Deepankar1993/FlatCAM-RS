@@ -16,7 +16,7 @@ GIL. This rebuild keeps the Python original untouched and reimplements the engin
 |---|---|
 | **Language / toolchain** | Rust 2021, Cargo workspace |
 | **Crates** | 17 (`crates/*`) |
-| **Tests** | ~788 passing across the workspace, 0 warnings (last full run) |
+| **Tests** | ~819 passing across the workspace, 0 warnings (last full run) |
 | **GUI** | Native desktop app on `eframe`/`egui` 0.29 — working |
 | **CLI** | Headless `flatcam-rs` binary — working |
 | **Validation** | Real KiCad board (Gerber X2 + Excellon) parses and machines correctly |
@@ -28,11 +28,11 @@ GIL. This rebuild keeps the Python original untouched and reimplements the engin
 |-------|--------------------|-------|
 | `fc-geo` | `camlib` Shapely usage | `geo` + `geo-buffer`. Offset is orientation-normalized (i_overlay can emit CW); affine transforms (translate/rotate/scale/skew/mirror); triangulation (earcut); hull/simplify/centroid/contains; hatch; balanced O(n log n) `union_all`. |
 | `fc-gerber` | `ParseGerber.py` | RS-274X + aperture macros (arithmetic evaluator), thermal/moiré primitives, X2/X3 attributes, Gerber writer (round-trips). |
-| `fc-excellon` | `ParseExcellon.py` | Zero-suppression decoding, slots, Excellon writer. `Excellon` is `Clone`. |
+| `fc-excellon` | `ParseExcellon.py` | Zero-suppression decoding, slots, Excellon writer, PcbWizard (.INF/.DRL) import. `Excellon` is `Clone`. |
 | `fc-gcode` | `camlib` CNCjob + `preprocessors/` | `Preprocessor` trait; ~34 dialects (GRBL/Marlin/Smoothie/TinyG/EMC2/Roland MDX-20/540/ISEL+ICP/NCCAD9/Line-xyz/Check-points/HPGL/laser variants incl. GRBL-z, Marlin-z, default-laser, eleks-drd/SolderPaste Paste_1·GRBL·Marlin…); G-code reader; collinear optimizer; stats. |
 | `fc-cam` | `appPlugins/*` (Tool*) | Isolation, drilling, paint/infill, NCC, cutout+tabs/bridges, panelize, double-sided, transforms, milling, sub, etch, invert, drill-optimize, fiducials (circular/cross/chess), follow, solderpaste, thieving (dots/squares/lines/solid + robber bar), punch-Gerber, extract-drills, corner markers, rules-check (DRC), levelling, teardrops, copper-pour, spiral pocket, scale-fit, dogbone, TSP path order, text engrave, tools DB. |
 | `fc-laser` | _(new — not in original)_ | Diode-laser beam-shape compensation: anisotropic kerf/power model, astigmatic Z-beam, calibration grids, power-curve LUT, cross-hatch/raster fill, burn simulation. See `docs/LASER_NOTES.md`. |
-| `fc-svg` / `fc-dxf` / `fc-pdf` / `fc-hpgl` | SVG/DXF/PDF/HPGL2 importers | Vector import → geometry; SVG and DXF now also **export** (writers, round-trip tested). |
+| `fc-svg` / `fc-dxf` / `fc-pdf` / `fc-hpgl` | SVG/DXF/PDF/HPGL2 importers | Vector import → geometry with **ring-nesting** (holes reconstructed); SVG/DXF/PDF now also **export** (writers, round-trip tested). |
 | `fc-image` | _(new)_ `ToolImage` | Raster import: decode BMP/PNG/JPG, threshold, merge ink pixels into geometry (`trace_bytes`/`trace_file`). |
 | `fc-qr` | _(new)_ | QR code → geometry. |
 | `fc-app` | object model / project | `Project` tree (visibility/parent/select/rename/dup/reorder/cascade-delete), `Preferences`, JSON save/load. |
@@ -93,15 +93,20 @@ joins, splits, system vars, project save/load); CLI `script <file>`.
   selection, plain click replaces, Select All / Deselect All and Ctrl+A drive the
   real multi-set; all selected objects highlight in tree and canvas.
 - **Import/Export wired:** File ▸ Import ▸ Image (raster→geometry via `fc-image`),
-  File ▸ Export ▸ SVG / DXF / PNG now write real files for the selected object.
+  File ▸ Export ▸ SVG / DXF / PNG / **Print (PDF)** write real files for the
+  selection; **Edit ▸ Join** unions selected objects; **Tools Database** window
+  lists the `fc_cam::toolsdb` presets.
+- **Context menu:** Delete / Copy / Enable-Disable Plot act over the whole
+  multi-selection when the clicked object is part of it.
 - **Laser panel:** beam editor, astigmatism/focus controls, polar plot, burn
   heatmap overlay, fill/raster ops.
 
-**Known GUI limitations:** remaining File-menu items (scripting shell, multi-object
-join, tools database, print-to-PDF) still show "not yet ported"; interactive
-editors are basic (tool placement + bake); right-click single-object context
-actions set only the primary selection. The GUI needs a display — verify with
-`cargo run --release -p fc-gui` or render a PNG via the `screenshot` binary.
+**Known GUI limitations:** the in-app scripting shell is still stubbed; the Tools
+Database window is read-only (no add/edit yet); Join always produces a unioned
+Geometry object (no kind-preserving Excellon→Excellon / Gerber→Gerber join);
+interactive editors are basic (tool placement + bake). The GUI needs a display —
+verify with `cargo run --release -p fc-gui` or render a PNG via the `screenshot`
+binary.
 
 ## Testing & validation
 

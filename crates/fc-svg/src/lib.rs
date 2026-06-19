@@ -17,6 +17,9 @@ use fc_geo::{circle, Coord, LineString, MultiPolygon, Polygon};
 pub mod writer;
 pub use writer::*;
 
+mod nesting;
+use nesting::nest_rings;
+
 #[derive(thiserror::Error, Debug)]
 pub enum SvgError {
     #[error("XML parse error: {0}")]
@@ -36,7 +39,12 @@ const ELLIPSE_STEPS: usize = 48;
 /// Parse SVG source text into geometry.
 pub fn parse(text: &str) -> Result<SvgDoc, SvgError> {
     let doc = roxmltree::Document::parse(text)?;
-    let mut polys: Vec<Polygon<f64>> = Vec::new();
+    // Closed rings are collected here and nested (exterior/hole) at the end;
+    // shapes that are already polygons (circle/ellipse) are kept separate since
+    // they carry their own flattened rings and don't participate in nesting with
+    // arbitrary paths in practice — but we still feed their exterior rings into
+    // the nesting pass so a circle-inside-a-rect imports as a hole faithfully.
+    let mut rings: Vec<LineString<f64>> = Vec::new();
     let mut lines: Vec<LineString<f64>> = Vec::new();
 
     for node in doc.descendants() {
@@ -49,7 +57,7 @@ pub fn parse(text: &str) -> Result<SvgDoc, SvgError> {
                 if let Some(d) = node.attribute("d") {
                     for sub in parse_path(d) {
                         if sub.closed && sub.points.len() >= 3 {
-                            polys.push(close_polygon(sub.points));
+                            rings.push(close_ring(sub.points));
                         } else if sub.points.len() >= 2 {
                             lines.push(LineString::new(sub.points));
                         }
@@ -67,14 +75,14 @@ pub fn parse(text: &str) -> Result<SvgDoc, SvgError> {
                         Coord { x, y: y + h },
                         Coord { x, y },
                     ];
-                    polys.push(Polygon::new(LineString::new(ring), vec![]));
+                    rings.push(LineString::new(ring));
                 }
             }
             "circle" => {
                 let (cx, cy) = (attr("cx").unwrap_or(0.0), attr("cy").unwrap_or(0.0));
                 if let Some(r) = attr("r") {
                     if r > 0.0 {
-                        polys.push(circle(cx, cy, r, ELLIPSE_STEPS));
+                        rings.push(circle(cx, cy, r, ELLIPSE_STEPS).exterior().clone());
                     }
                 }
             }
@@ -82,7 +90,7 @@ pub fn parse(text: &str) -> Result<SvgDoc, SvgError> {
                 let (cx, cy) = (attr("cx").unwrap_or(0.0), attr("cy").unwrap_or(0.0));
                 let (rx, ry) = (attr("rx").unwrap_or(0.0), attr("ry").unwrap_or(0.0));
                 if rx > 0.0 && ry > 0.0 {
-                    polys.push(ellipse(cx, cy, rx, ry, ELLIPSE_STEPS));
+                    rings.push(ellipse(cx, cy, rx, ry, ELLIPSE_STEPS).exterior().clone());
                 }
             }
             "line" => {
@@ -105,7 +113,7 @@ pub fn parse(text: &str) -> Result<SvgDoc, SvgError> {
                 if let Some(pts) = node.attribute("points") {
                     let c = parse_points(pts);
                     if c.len() >= 3 {
-                        polys.push(close_polygon(c));
+                        rings.push(close_ring(c));
                     }
                 }
             }
@@ -114,7 +122,7 @@ pub fn parse(text: &str) -> Result<SvgDoc, SvgError> {
     }
 
     Ok(SvgDoc {
-        polygons: MultiPolygon::new(polys),
+        polygons: nest_rings(rings),
         polylines: lines,
     })
 }
@@ -130,13 +138,13 @@ fn ellipse(cx: f64, cy: f64, rx: f64, ry: f64, steps: usize) -> Polygon<f64> {
     Polygon::new(LineString::new(ring), vec![])
 }
 
-fn close_polygon(mut pts: Vec<Coord<f64>>) -> Polygon<f64> {
+fn close_ring(mut pts: Vec<Coord<f64>>) -> LineString<f64> {
     if pts.first() != pts.last() {
         if let Some(f) = pts.first().copied() {
             pts.push(f);
         }
     }
-    Polygon::new(LineString::new(pts), vec![])
+    LineString::new(pts)
 }
 
 fn parse_points(s: &str) -> Vec<Coord<f64>> {
@@ -453,5 +461,57 @@ mod tests {
         let svg = r#"<svg><polygon points="0,0 4,0 4,4 0,4"/></svg>"#;
         let d = parse(svg).unwrap();
         assert!((area(&d.polygons) - 16.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn square_with_hole_nests_to_one_polygon() {
+        // Outer 10x10 square with an inner 4x4 square subpath = a hole.
+        let svg = r#"<svg><path d="M0,0 L10,0 L10,10 L0,10 Z M3,3 L7,3 L7,7 L3,7 Z"/></svg>"#;
+        let d = parse(svg).unwrap();
+        assert_eq!(d.polygons.0.len(), 1, "one polygon with a hole");
+        assert_eq!(d.polygons.0[0].interiors().len(), 1);
+        assert!((area(&d.polygons) - 84.0).abs() < 1e-6, "area was {}", area(&d.polygons));
+    }
+
+    #[test]
+    fn two_disjoint_squares_stay_two_polygons() {
+        let svg = r#"<svg>
+            <path d="M0,0 L2,0 L2,2 L0,2 Z"/>
+            <path d="M5,5 L8,5 L8,8 L5,8 Z"/>
+        </svg>"#;
+        let d = parse(svg).unwrap();
+        assert_eq!(d.polygons.0.len(), 2, "disjoint squares stay separate");
+        assert!(d.polygons.0.iter().all(|p| p.interiors().is_empty()));
+        assert!((area(&d.polygons) - (4.0 + 9.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn nested_island_two_levels() {
+        // 10x10 square, a 6x6 hole inside it, and a 2x2 filled island inside
+        // the hole. Expected: 2 exteriors (outer + island), the outer carrying
+        // one hole. Net area = 100 - 36 + 4 = 68.
+        let svg = r#"<svg><path d="
+            M0,0 L10,0 L10,10 L0,10 Z
+            M2,2 L8,2 L8,8 L2,8 Z
+            M4,4 L6,4 L6,6 L4,6 Z
+        "/></svg>"#;
+        let d = parse(svg).unwrap();
+        assert_eq!(d.polygons.0.len(), 2, "outer-with-hole + inner island");
+        let total_holes: usize = d.polygons.0.iter().map(|p| p.interiors().len()).sum();
+        assert_eq!(total_holes, 1, "exactly one hole (the 6x6 ring)");
+        assert!((area(&d.polygons) - 68.0).abs() < 1e-6, "area was {}", area(&d.polygons));
+    }
+
+    #[test]
+    fn open_polyline_unaffected_by_nesting() {
+        let svg = r#"<svg>
+            <path d="M0,0 L10,0 L10,10 L0,10 Z M3,3 L7,3 L7,7 L3,7 Z"/>
+            <polyline points="1,1 9,9 1,9"/>
+        </svg>"#;
+        let d = parse(svg).unwrap();
+        assert_eq!(d.polygons.0.len(), 1);
+        assert_eq!(d.polygons.0[0].interiors().len(), 1);
+        assert_eq!(d.polylines.len(), 1, "open polyline is preserved as-is");
+        assert_eq!(d.polylines[0].0.len(), 3);
     }
 }

@@ -65,7 +65,13 @@ fn cmd_count(ctx: &mut ScriptContext, args: &[String]) -> Result<String, ScriptE
 fn cmd_delete(ctx: &mut ScriptContext, args: &[String]) -> Result<String, ScriptError> {
     let name = sarg(args, 0, "delete <name>")?;
     match ctx.objects.remove(name) {
-        Some(_) => Ok("deleted".into()),
+        Some(_) => {
+            // Clear the active selection if it pointed at the deleted object.
+            if ctx.active.as_deref() == Some(name) {
+                ctx.active = None;
+            }
+            Ok("deleted".into())
+        }
         None => Err(ScriptError::NotFound(name.to_string())),
     }
 }
@@ -78,6 +84,10 @@ fn cmd_rename(ctx: &mut ScriptContext, args: &[String]) -> Result<String, Script
         .objects
         .remove(&old)
         .ok_or_else(|| ScriptError::NotFound(old.clone()))?;
+    // Keep the active selection pointing at the object under its new name.
+    if ctx.active.as_deref() == Some(old.as_str()) {
+        ctx.active = Some(new.clone());
+    }
     ctx.put(new, obj);
     Ok("renamed".into())
 }
