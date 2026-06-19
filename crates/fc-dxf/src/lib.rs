@@ -17,6 +17,9 @@ use dxf::Drawing;
 
 use fc_geo::{Coord, LineString, MultiPolygon, Polygon};
 
+pub mod writer;
+pub use writer::*;
+
 /// Number of segments used when flattening a full circle.
 const CIRCLE_SEGMENTS: usize = 48;
 

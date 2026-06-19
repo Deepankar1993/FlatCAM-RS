@@ -189,7 +189,10 @@ pub fn by_name(name: &str) -> Option<Box<dyn Preprocessor>> {
         other => crate::dialects_extra::by_name_extra(other)
             .or_else(|| crate::dialects_more::by_name_more(other))
             .or_else(|| crate::dialects_paste::by_name_paste(other))
-            .or_else(|| crate::dialects_laser2::by_name_laser2(other)),
+            .or_else(|| crate::dialects_laser2::by_name_laser2(other))
+            .or_else(|| crate::dialects_parity::by_name_parity(other))
+            .or_else(|| crate::dialects_eleks::by_name_eleks(other))
+            .or_else(|| crate::dialects_paste2::by_name_paste2(other)),
     }
 }
 
@@ -244,5 +247,29 @@ mod tests {
     #[test]
     fn by_name_unknown_is_none() {
         assert!(by_name("nope").is_none());
+    }
+
+    #[test]
+    fn by_name_resolves_parity_dialects() {
+        for key in [
+            "isel_icp_cnc",
+            "line_xyz",
+            "grbl_laser_z",
+            "marlin_laser_z",
+            "default_laser",
+            "nccad9",
+            "roland_mdx_540",
+            "check_points",
+            "hpgl",
+        ] {
+            assert!(by_name(key).is_some(), "{key} must resolve through by_name");
+        }
+    }
+
+    #[test]
+    fn by_name_resolves_paste2_dialects() {
+        assert!(by_name("paste_1").is_some());
+        assert!(by_name("paste_grbl").is_some());
+        assert!(by_name("paste_marlin").is_some());
     }
 }

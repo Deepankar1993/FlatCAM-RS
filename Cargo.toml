@@ -17,6 +17,7 @@ members = [
     "crates/fc-qr",
     "crates/fc-pdf",
     "crates/fc-laser",
+    "crates/fc-image",
 ]
 exclude = ["_nettest", "_dxfprobe", "_qrprobe", "_pdfprobe"]
 
@@ -36,6 +37,9 @@ anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rayon = "1"
+# Raster image decoding for fc-image (ToolImage port). Only the codecs we
+# actually trace from PCB raster exports: PNG, JPEG and BMP.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
 
 # Optimized release profile — the whole point of the Rust port is speed.
 [profile.release]

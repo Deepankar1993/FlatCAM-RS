@@ -77,6 +77,118 @@ pub fn cutout_rectangular(
     cutout_geometry(&rect, p)
 }
 
+/// Generate a freeform cutout tool-path along an arbitrary user-supplied path.
+///
+/// Unlike [`cutout_geometry`] (which works on filled polygons and walks every
+/// ring) or [`cutout_rectangular`] (which is bbox-only), this takes a raw
+/// poly-line — the exact outline the user drew — and produces the gapped
+/// (tabbed) cut path that follows it. The path may be open or closed:
+///
+/// * If `closed` is `true` (or the path's first and last points coincide) the
+///   path is treated as a loop and the tab gaps are distributed cyclically, so
+///   no gap straddles the seam at the start/end.
+/// * If `closed` is `false` the path is an open curve cut end-to-end with tab
+///   gaps spaced along it.
+///
+/// [`CutoutParams::outside`] is ignored here because an arbitrary path has no
+/// well-defined inside/outside; the cut follows the path as given. `tabs == 0`
+/// emits the whole (densified) path as a single uncut polyline.
+pub fn cutout_freeform(path: &[(f64, f64)], closed: bool, p: &CutoutParams) -> Vec<Polyline> {
+    let mut ring: Polyline = path.to_vec();
+    if ring.len() < 2 {
+        return Vec::new();
+    }
+    let is_loop = closed || ring.first() == ring.last();
+    let mut out: Vec<Polyline> = Vec::new();
+    if is_loop {
+        process_ring(ring, p, &mut out);
+    } else {
+        process_open_path(&mut ring, p, &mut out);
+    }
+    out
+}
+
+/// Build a freeform cutout [`CncJob`] from a user path, in the given units.
+pub fn cutout_freeform_job(
+    path: &[(f64, f64)],
+    closed: bool,
+    p: &CutoutParams,
+    units: Units,
+) -> CncJob {
+    let paths = cutout_freeform(path, closed, p);
+    let mut job = p.job.clone();
+    job.units = units;
+    job.tool_diameter = p.tool_diameter;
+    CncJob {
+        params: job,
+        kind: JobKind::Mill { paths },
+    }
+}
+
+/// Break an OPEN path (not a loop) into tabbed cut arcs. Tab centres are spaced
+/// along the interior of the path (avoiding the two free ends) and each gap of
+/// `tab_gap` length interrupts the cut, yielding `tabs + 1` arcs at most.
+fn process_open_path(path: &mut Polyline, p: &CutoutParams, out: &mut Vec<Polyline>) {
+    if path.len() < 2 {
+        return;
+    }
+    if p.tabs == 0 {
+        out.push(std::mem::take(path));
+        return;
+    }
+    let mut length = 0.0;
+    for w in path.windows(2) {
+        length += dist(w[0], w[1]);
+    }
+    if length <= 0.0 {
+        out.push(std::mem::take(path));
+        return;
+    }
+    let max_seg = (p.tab_gap / 4.0).max(0.25);
+    let ring = densify(path, max_seg);
+
+    // Place `tabs` gap centres evenly along the open length at (i+1)/(tabs+1),
+    // so none sits on a free end.
+    let tab_centers: Vec<f64> = (0..p.tabs)
+        .map(|i| (i as f64 + 1.0) * length / (p.tabs as f64 + 1.0))
+        .collect();
+    let half_gap = p.tab_gap / 2.0;
+    let in_gap = |s: f64| -> bool {
+        tab_centers.iter().any(|&c| (s - c).abs() <= half_gap)
+    };
+
+    let mut segments: Vec<Polyline> = Vec::new();
+    let mut current: Polyline = Vec::new();
+    let mut s = 0.0;
+    if !in_gap(s) {
+        current.push(ring[0]);
+    }
+    for w in ring.windows(2) {
+        s += dist(w[0], w[1]);
+        if in_gap(s) {
+            if current.len() >= 2 {
+                segments.push(std::mem::take(&mut current));
+            } else {
+                current.clear();
+            }
+        } else {
+            if current.is_empty() {
+                current.push(w[0]);
+            }
+            current.push(w[1]);
+        }
+    }
+    if current.len() >= 2 {
+        segments.push(current);
+    }
+    for mut seg in segments {
+        seg.dedup_by(|a, b| dist(*a, *b) < 1e-12);
+        if seg.len() >= 2 {
+            out.push(seg);
+        }
+    }
+}
+
 /// Build a cutout [`CncJob`] from an outline, in the given document units.
 pub fn cutout_job(outline: &MultiPolygon<f64>, p: &CutoutParams, units: Units) -> CncJob {
     let paths = cutout_geometry(outline, p);
@@ -273,6 +385,63 @@ mod tests {
         };
         let paths = cutout_rectangular(0.0, 0.0, 20.0, 20.0, &p);
         assert!(paths.len() >= 4);
+    }
+
+    #[test]
+    fn freeform_closed_path_is_gapped() {
+        // A user-drawn closed diamond. 3 tabs should split it into >=3 arcs and
+        // none of them is the full closed loop.
+        let diamond: Vec<(f64, f64)> = vec![
+            (10.0, 0.0),
+            (20.0, 10.0),
+            (10.0, 20.0),
+            (0.0, 10.0),
+            (10.0, 0.0),
+        ];
+        let p = CutoutParams {
+            tool_diameter: 1.0,
+            tabs: 3,
+            tab_gap: 2.0,
+            outside: false,
+            job: JobParams::default(),
+        };
+        let arcs = cutout_freeform(&diamond, true, &p);
+        assert!(arcs.len() >= 3, "3 tabs => >=3 arcs, got {}", arcs.len());
+        for arc in &arcs {
+            let closed = arc.len() >= 4 && arc.first() == arc.last();
+            assert!(!closed, "no arc should be the full closed loop");
+        }
+    }
+
+    #[test]
+    fn freeform_open_path_is_gapped() {
+        // An open zig-zag line. 2 tabs => the cut is broken into up to 3 arcs,
+        // and the total cut length is shorter than the path (gaps removed).
+        let path: Vec<(f64, f64)> = vec![(0.0, 0.0), (30.0, 0.0)];
+        let p = CutoutParams {
+            tool_diameter: 1.0,
+            tabs: 2,
+            tab_gap: 2.0,
+            outside: false,
+            job: JobParams::default(),
+        };
+        let arcs = cutout_freeform(&path, false, &p);
+        assert!(arcs.len() >= 2, "2 interior tabs => >=2 arcs, got {}", arcs.len());
+        let cut_len: f64 = arcs
+            .iter()
+            .flat_map(|a| a.windows(2).map(|w| dist(w[0], w[1])))
+            .sum();
+        assert!(cut_len < 30.0, "gaps should shorten cut length, got {cut_len}");
+        assert!(cut_len > 20.0, "but most of the 30mm line is still cut, got {cut_len}");
+    }
+
+    #[test]
+    fn freeform_no_tabs_is_whole_path() {
+        let path: Vec<(f64, f64)> = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)];
+        let p = CutoutParams { tabs: 0, ..Default::default() };
+        let arcs = cutout_freeform(&path, false, &p);
+        assert_eq!(arcs.len(), 1, "no tabs => single uncut path");
+        assert_eq!(arcs[0].len(), 3);
     }
 
     #[test]

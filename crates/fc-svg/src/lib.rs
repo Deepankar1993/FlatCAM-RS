@@ -14,6 +14,9 @@
 
 use fc_geo::{circle, Coord, LineString, MultiPolygon, Polygon};
 
+pub mod writer;
+pub use writer::*;
+
 #[derive(thiserror::Error, Debug)]
 pub enum SvgError {
     #[error("XML parse error: {0}")]

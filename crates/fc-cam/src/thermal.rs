@@ -16,7 +16,7 @@ use fc_geo::{
 /// * `hole_dia` — diameter of the drilled / cleared hole (removed from the pad).
 /// * `gap`      — width of each spoke-clearance slot cut through the ring.
 /// * `spokes`   — number of evenly-spaced gaps (NOT the number of copper spokes,
-///                though for a closed ring they are equal).
+///   though for a closed ring they are equal).
 /// * `steps`    — number of segments used to approximate the circles.
 ///
 /// The result is the annular ring `circle(pad/2) − circle(hole/2)` with the

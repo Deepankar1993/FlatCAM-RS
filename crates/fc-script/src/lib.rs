@@ -12,11 +12,14 @@ use fc_geo::MultiPolygon;
 use std::collections::BTreeMap;
 
 mod analyze_cmds;
+mod build_cmds;
 mod cam;
 mod edit_cmds;
 mod gen;
 mod geo_ops;
 mod io;
+mod io_cmds;
+mod more_cmds;
 mod query;
 mod transform_cmds;
 
@@ -122,6 +125,9 @@ impl Registry {
             transform_cmds::commands(),
             analyze_cmds::commands(),
             edit_cmds::commands(),
+            more_cmds::commands(),
+            io_cmds::commands(),
+            build_cmds::commands(),
         ] {
             for (name, f) in group {
                 map.insert(name, f);

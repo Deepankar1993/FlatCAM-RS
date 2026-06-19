@@ -11,9 +11,14 @@ use fc_gerber::Gerber;
 use fc_excellon::Excellon;
 
 pub mod paint;
-pub use paint::{paint_job, paint_region, PaintParams};
+pub use paint::{
+    paint_job, paint_job_strategy, paint_region, paint_region_strategy, PaintParams, PaintStrategy,
+};
 pub mod cutout;
-pub use cutout::{cutout_geometry, cutout_job, cutout_rectangular, CutoutParams};
+pub use cutout::{
+    cutout_freeform, cutout_freeform_job, cutout_geometry, cutout_job, cutout_rectangular,
+    CutoutParams,
+};
 pub mod ncc;
 pub use ncc::{ncc_job, ncc_paths, ncc_region, NccParams};
 pub mod panelize;
@@ -39,18 +44,31 @@ pub use leadinout::add_lead;
 pub mod ramp;
 pub use ramp::ramp_entry;
 pub mod fiducials;
-pub use fiducials::{corner_fiducials, fiducial_dots};
+pub use fiducials::{
+    corner_fiducials, fiducial_dots, fiducial_marks, fiducial_shape, FiducialShape,
+};
+pub mod punch;
+pub use punch::{punch_gerber, PunchMode, PunchParams};
+pub mod extract;
+pub use extract::{extract_drills, group_by_diameter, Drill, ExtractParams};
+pub mod markers;
+pub use markers::{corner_markers, MarkerParams, MarkerShape};
 pub mod follow;
 pub use follow::{follow_job, follow_paths};
 pub mod solderpaste;
 pub use solderpaste::{paste_job, paste_paths, PasteParams};
 pub mod thieving;
-pub use thieving::{thieving, ThievingParams};
+pub use thieving::{plating_mask, thieving, FillPattern, PlatingMaskParams, ThievingParams};
 pub mod rulescheck;
 pub use rulescheck::{check_clearance, min_clearance_ok, Violation};
 pub mod levelling;
 pub use levelling::{probe_grid, probe_job};
 pub mod calculators;
+pub use calculators::{
+    copper_oz_to_um, copper_um_to_oz, electroplating_time_min, inch_to_mm, mm_to_inch,
+    track_resistance_ohms, track_resistance_ohms_at, trace_current_capacity_a,
+    trace_width_required_mm, v_bit_cut_width, v_bit_depth_for_width,
+};
 pub mod film;
 pub mod align;
 pub mod distance;

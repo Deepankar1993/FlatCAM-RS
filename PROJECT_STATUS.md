@@ -15,8 +15,8 @@ GIL. This rebuild keeps the Python original untouched and reimplements the engin
 | | |
 |---|---|
 | **Language / toolchain** | Rust 2021, Cargo workspace |
-| **Crates** | 16 (`crates/*`) |
-| **Tests** | ~604 passing across the workspace, 0 warnings (last full run) |
+| **Crates** | 17 (`crates/*`) |
+| **Tests** | ~753 passing across the workspace, 0 warnings (last full run) |
 | **GUI** | Native desktop app on `eframe`/`egui` 0.29 — working |
 | **CLI** | Headless `flatcam-rs` binary — working |
 | **Validation** | Real KiCad board (Gerber X2 + Excellon) parses and machines correctly |
@@ -29,13 +29,14 @@ GIL. This rebuild keeps the Python original untouched and reimplements the engin
 | `fc-geo` | `camlib` Shapely usage | `geo` + `geo-buffer`. Offset is orientation-normalized (i_overlay can emit CW); affine transforms (translate/rotate/scale/skew/mirror); triangulation (earcut); hull/simplify/centroid/contains; hatch; balanced O(n log n) `union_all`. |
 | `fc-gerber` | `ParseGerber.py` | RS-274X + aperture macros (arithmetic evaluator), thermal/moiré primitives, X2/X3 attributes, Gerber writer (round-trips). |
 | `fc-excellon` | `ParseExcellon.py` | Zero-suppression decoding, slots, Excellon writer. `Excellon` is `Clone`. |
-| `fc-gcode` | `camlib` CNCjob + `preprocessors/` | `Preprocessor` trait; ~30 dialects (GRBL/Marlin/Smoothie/TinyG/EMC2/Roland/laser variants…); G-code reader; collinear optimizer; stats. |
-| `fc-cam` | `appPlugins/*` (Tool*) | Isolation, drilling, paint/infill, NCC, cutout+tabs/bridges, panelize, double-sided, transforms, milling, sub, etch, invert, drill-optimize, fiducials, follow, solderpaste, thieving, rules-check (DRC), levelling, teardrops, copper-pour, spiral pocket, scale-fit, dogbone, TSP path order, text engrave, tools DB. |
+| `fc-gcode` | `camlib` CNCjob + `preprocessors/` | `Preprocessor` trait; ~34 dialects (GRBL/Marlin/Smoothie/TinyG/EMC2/Roland MDX-20/540/ISEL+ICP/NCCAD9/Line-xyz/Check-points/HPGL/laser variants incl. GRBL-z, Marlin-z, default-laser, eleks-drd/SolderPaste Paste_1·GRBL·Marlin…); G-code reader; collinear optimizer; stats. |
+| `fc-cam` | `appPlugins/*` (Tool*) | Isolation, drilling, paint/infill, NCC, cutout+tabs/bridges, panelize, double-sided, transforms, milling, sub, etch, invert, drill-optimize, fiducials (circular/cross/chess), follow, solderpaste, thieving (dots/squares/lines/solid + robber bar), punch-Gerber, extract-drills, corner markers, rules-check (DRC), levelling, teardrops, copper-pour, spiral pocket, scale-fit, dogbone, TSP path order, text engrave, tools DB. |
 | `fc-laser` | _(new — not in original)_ | Diode-laser beam-shape compensation: anisotropic kerf/power model, astigmatic Z-beam, calibration grids, power-curve LUT, cross-hatch/raster fill, burn simulation. See `docs/LASER_NOTES.md`. |
-| `fc-svg` / `fc-dxf` / `fc-pdf` / `fc-hpgl` | SVG/DXF/PDF/HPGL2 importers | Vector import → geometry. |
+| `fc-svg` / `fc-dxf` / `fc-pdf` / `fc-hpgl` | SVG/DXF/PDF/HPGL2 importers | Vector import → geometry; SVG and DXF now also **export** (writers, round-trip tested). |
+| `fc-image` | _(new)_ `ToolImage` | Raster import: decode BMP/PNG/JPG, threshold, merge ink pixels into geometry (`trace_bytes`/`trace_file`). |
 | `fc-qr` | _(new)_ | QR code → geometry. |
 | `fc-app` | object model / project | `Project` tree (visibility/parent/select/rename/dup/reorder/cascade-delete), `Preferences`, JSON save/load. |
-| `fc-script` | Tcl shell | Headless batch/scripting engine (~28 commands: io/cam/geo/query/transform/analyze/edit). |
+| `fc-script` | Tcl shell | Headless batch/scripting engine (~73 commands: io/cam/geo/query/transform/analyze/edit + cncjob, skew, mirror, buffer, follow, ncr, exteriors/interiors, new_geometry/gerber, set_origin, version/help/list_pp, export_gerber/excellon/svg/dxf, write_gcode, save_project, open_gcode, add_circle/poly/polyline/rect/drill/slot, subtract_poly/rect, geo_union, milldrills/millslots, join_geometries/excellon). |
 | `fc-editor` | `appEditors/*` | GUI-free editor cores (geo/gerber/excellon/gcode). |
 | `fc-gui` | `appGUI/*` | Native desktop app (binary `flatcam-gui`) + headless `screenshot` binary. |
 | `fc-cli` | _(new)_ | Headless `flatcam-rs` binary. |
@@ -48,8 +49,12 @@ SVG, DXF, PDF (vector), HPGL2.
 **CAM operations:** isolation (single + multi-tool), drilling, paint/infill, NCC
 (non-copper clear), cutout with tabs/bridges, panelize, double-sided alignment,
 transforms (rotate/skew/scale/mirror/offset), milling (drill→mill, slots), etch,
-invert, fiducials, follow, solderpaste dispensing, thieving/copper-pour, teardrops,
-dogbone/T-bone, DRC rules-check, bed-leveling (IDW), TSP drill ordering, text engrave.
+invert, fiducials (circular/cross/chess), follow, solderpaste dispensing,
+thieving (dots/squares/lines/solid + robber bar + plating mask)/copper-pour,
+punch-Gerber, extract-drills, corner markers, paint (lines/contour/seed),
+cutout (rect/outline/freeform), PCB calculators (V-bit, electroplating, track
+resistance, IPC-2221 current/width), teardrops, dogbone/T-bone, DRC rules-check,
+bed-leveling (IDW), TSP drill ordering, text engrave, raster image trace.
 
 **G-code:** ~30 preprocessor dialects, lead-in/out, ramps, collinear optimization,
 renumbering, stats; G-code reader for re-import.
@@ -121,9 +126,10 @@ cargo test --workspace
 
 See `docs/ROADMAP.md` and `docs/LASER_NOTES.md`. Short list:
 
-- GUI depth: true multi-object selection; wire the remaining File-menu items
-  (scripting shell, SVG/DXF/PNG export, object join, tools database, print-to-PDF);
-  richer interactive editors.
+- GUI depth: true multi-object selection; wire the remaining File-menu items to
+  the now-available library backends (SVG/DXF export writers exist in
+  `fc-svg`/`fc-dxf`; still need GUI hookup for PNG export, object join, tools
+  database, print-to-PDF); richer interactive editors.
 - Custom color picker + per-object opacity in the context menu.
 - Laser: connected raster path, hardware calibration loop (model is complete).
 - More preprocessor dialects as needed.

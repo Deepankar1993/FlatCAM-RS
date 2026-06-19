@@ -324,6 +324,7 @@ impl PluginKind {
                     spacing: get(1),
                     clearance: get(2),
                     margin: get(3),
+                    ..Default::default()
                 };
                 PluginOutput::Region(fc_cam::thieving(region, &p))
             }
