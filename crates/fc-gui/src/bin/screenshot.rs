@@ -111,6 +111,9 @@ fn main() -> eframe::Result<()> {
             for f in &files {
                 app.load_path(f);
             }
+            // Reproduce the user clicking the loaded object, so the screenshot
+            // shows its Operations panel (the "Selected" tab).
+            app.focus_selected();
             Ok(Box::new(ScreenshotApp {
                 app,
                 out_path,

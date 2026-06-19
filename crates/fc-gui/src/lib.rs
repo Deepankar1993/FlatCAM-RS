@@ -547,6 +547,21 @@ impl FlatCamApp {
         self.project.select(name);
         self.selection = vec![name.to_string()];
         self.rename_buf = name.to_string();
+        // Surface the object's Operations panel, like stock FlatCAM switching to
+        // its "Selected" tab. Only jump from the Project tab so we never yank the
+        // user out of a plugin they're configuring.
+        if self.left_tab == LeftTab::Project {
+            self.left_tab = LeftTab::Properties;
+        }
+    }
+
+    /// Route the currently-selected object through the click-selection path
+    /// (surfacing its Operations panel). Public so the `screenshot` tool and
+    /// tests can reproduce a user selecting the object they just loaded.
+    pub fn focus_selected(&mut self) {
+        if let Some(name) = self.project.selected.clone() {
+            self.select_single(&name);
+        }
     }
 
     /// Toggle `name`'s membership in the multi-selection (Ctrl+click). The
@@ -2191,8 +2206,100 @@ impl FlatCamApp {
         }
     }
 
-    /// Properties tab: key/value properties of the selected object.
+    /// The shared CAM parameter grid (tool Ø / passes / overlap / lead /
+    /// preprocessor), reused by the Project tab and the per-object Operations
+    /// panel so both edit the same `self.params` / `self.preproc`.
+    fn draw_cam_params(&mut self, ui: &mut egui::Ui) {
+        if self.preproc.is_empty() {
+            self.preproc = "grbl".into();
+        }
+        egui::Grid::new("cam_params").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("Tool Ø");
+            ui.add(egui::DragValue::new(&mut self.params.tool_dia).speed(0.01).range(0.05..=10.0).suffix(" mm"));
+            ui.end_row();
+            ui.label("Passes");
+            ui.add(egui::DragValue::new(&mut self.params.passes).range(1..=20));
+            ui.end_row();
+            ui.label("Overlap");
+            ui.add(egui::DragValue::new(&mut self.params.overlap).speed(0.01).range(0.0..=0.95));
+            ui.end_row();
+            ui.label("Lead in/out");
+            ui.add(egui::DragValue::new(&mut self.params.lead).speed(0.05).range(0.0..=10.0).suffix(" mm"));
+            ui.end_row();
+            ui.label("Preprocessor");
+            egui::ComboBox::from_id_salt("preproc")
+                .selected_text(self.preproc.clone())
+                .show_ui(ui, |ui| {
+                    for name in ["grbl", "marlin", "default", "grbl_no_m6", "grbl_laser", "roland", "smoothie", "tinyg"] {
+                        ui.selectable_value(&mut self.preproc, name.to_string(), name);
+                    }
+                });
+            ui.end_row();
+        });
+    }
+
+    /// Per-object operations, surfaced in the Properties ("Selected") tab — this
+    /// is the "next screen" stock FlatCAM shows when you select an object: a
+    /// Gerber offers Isolation Routing / NCC / Paint / Cutout / Follow, an
+    /// Excellon offers Drilling, a CNCJob offers G-code view/export, etc.
+    fn draw_object_operations(&mut self, ui: &mut egui::Ui, kind: ObjectKind) {
+        ui.add_space(10.0);
+        widgets::section_header(ui, "Operations");
+        match kind {
+            ObjectKind::Gerber | ObjectKind::Geometry | ObjectKind::Svg => {
+                self.draw_cam_params(ui);
+                ui.add_space(6.0);
+                if widgets::primary_button(ui, "Isolation Routing").clicked() {
+                    self.run_isolation();
+                }
+                ui.add_space(4.0);
+                egui::Grid::new("gerber_ops").num_columns(2).spacing([6.0, 6.0]).show(ui, |ui| {
+                    if ui.button("Non-Copper Clear").clicked() { self.run_ncc(); }
+                    if ui.button("Paint Area").clicked() { self.run_paint(); }
+                    ui.end_row();
+                    if ui.button("Cutout").clicked() { self.run_cutout(); }
+                    if ui.button("Follow").clicked() { self.activate_plugin(plugins::PluginKind::Follow); }
+                    ui.end_row();
+                    if ui.button("Laser Isolation").clicked() { self.run_laser_iso(); }
+                    if ui.button("More tools…").clicked() { self.left_tab = LeftTab::Plugin; }
+                    ui.end_row();
+                });
+            }
+            ObjectKind::Excellon => {
+                if widgets::primary_button(ui, "Drilling").clicked() {
+                    self.run_drilling();
+                }
+                ui.add_space(4.0);
+                if ui.button("Milling (drills → mill)").clicked() {
+                    self.activate_plugin(plugins::PluginKind::Milling);
+                }
+            }
+            ObjectKind::CncJob => {
+                if widgets::primary_button(ui, "View G-code").clicked() {
+                    self.center_gcode = true;
+                }
+                ui.add_space(4.0);
+                if ui.button("Export G-code…").clicked() {
+                    self.save_gcode();
+                }
+            }
+            _ => {
+                ui.weak("No CAM operations for this object type.");
+            }
+        }
+    }
+
+    /// Properties tab: key/value properties of the selected object, plus the
+    /// kind-specific Operations panel.
     fn draw_properties_tab(&mut self, ui: &mut egui::Ui) {
+        // Grab the kind first so the immutable borrow ends before the operations
+        // panel (which needs `&mut self`).
+        let Some(kind) = self.project.selected_object().map(|o| o.kind) else {
+            ui.add_space(8.0);
+            ui.weak("No selection.");
+            ui.label("Select an object in the Project tab to see its properties.");
+            return;
+        };
         if let Some(obj) = self.project.selected_object() {
             let props = fc_app::properties(obj);
             widgets::card_frame(ui.style()).show(ui, |ui| {
@@ -2204,11 +2311,8 @@ impl FlatCamApp {
                     }
                 });
             });
-        } else {
-            ui.add_space(8.0);
-            ui.weak("No selection.");
-            ui.label("Select an object in the Project tab to see its properties.");
         }
+        self.draw_object_operations(ui, kind);
     }
 
     /// Project tab: the object tree, CAM parameters, editor, and laser panel.
@@ -2234,32 +2338,7 @@ impl FlatCamApp {
         self.draw_tree(ui);
         ui.add_space(4.0);
         widgets::section_header(ui, "Parameters");
-        if self.preproc.is_empty() {
-            self.preproc = "grbl".into();
-        }
-        egui::Grid::new("params").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-            ui.label("Tool Ø");
-            ui.add(egui::DragValue::new(&mut self.params.tool_dia).speed(0.01).range(0.05..=10.0).suffix(" mm"));
-            ui.end_row();
-            ui.label("Passes");
-            ui.add(egui::DragValue::new(&mut self.params.passes).range(1..=20));
-            ui.end_row();
-            ui.label("Overlap");
-            ui.add(egui::DragValue::new(&mut self.params.overlap).speed(0.01).range(0.0..=0.95));
-            ui.end_row();
-            ui.label("Lead in/out");
-            ui.add(egui::DragValue::new(&mut self.params.lead).speed(0.05).range(0.0..=10.0).suffix(" mm"));
-            ui.end_row();
-            ui.label("Preprocessor");
-            egui::ComboBox::from_id_salt("preproc")
-                .selected_text(self.preproc.clone())
-                .show_ui(ui, |ui| {
-                    for name in ["grbl", "marlin", "default", "grbl_no_m6", "grbl_laser", "roland", "smoothie", "tinyg"] {
-                        ui.selectable_value(&mut self.preproc, name.to_string(), name);
-                    }
-                });
-            ui.end_row();
-        });
+        self.draw_cam_params(ui);
         ui.add_space(4.0);
         self.draw_editor_panel(ui);
         ui.separator();
